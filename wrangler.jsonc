@@ -1,0 +1,24 @@
+// id.ldas.jp — learning DID/VC + passkeys. Deploy: npm run deploy (uses your wrangler login)
+{
+  "name": "id-ldas",
+  "main": "src/index.js",
+  "compatibility_date": "2026-09-01",
+  "assets": { "directory": "./public", "binding": "ASSETS", "run_worker_first": ["/admin", "/admin.html"] },
+  // Keep the real localhost URL in `wrangler dev` (otherwise it is rewritten to id.ldas.jp and passkeys fail).
+  "dev": { "host": "localhost:8787", "local_protocol": "http" },
+  "workers_dev": false,
+  "preview_urls": false,
+  "routes": [{ "pattern": "id.ldas.jp", "custom_domain": true }],
+  // Storage: a SQLite-backed Durable Object (src/store.js). Free plan; no D1 database needed.
+  "durable_objects": { "bindings": [{ "name": "STORE", "class_name": "Store" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Store"] }],
+  "vars": {
+    // Public values. ORCID_CLIENT_SECRET is a secret (1Password "id-ldas orcid" -> wrangler secret put).
+    "ORCID_CLIENT_ID": "APP-ZT5TM090PXPEXAOQ",
+    // Who may approve people (comma-separated ORCID iDs)
+    "ADMIN_ORCIDS": "0000-0001-8245-7925",
+    // Chain written into did:pkh subjects (Sepolia, where the Clio-X trial runs)
+    "WALLET_CHAIN_ID": "11155111"
+  }
+  // Secret ISSUER_JWK (Ed25519 private key, JWK JSON) is set with `wrangler secret put`, from 1Password.
+}

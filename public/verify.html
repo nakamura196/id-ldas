@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VC Verifier</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1 data-i18n="verify.title"></h1>
+  <p class="lead" data-i18n-html="verify.lead"></p>
+  <textarea id="jwt" rows="6" data-i18n-placeholder="verify.placeholder"></textarea>
+  <button id="go" data-i18n="verify.go"></button>
+  <ol id="steps"></ol>
+  <section id="holder" hidden>
+    <h2 data-i18n="verify.holderTitle"></h2>
+    <p data-i18n-html="verify.holderText"></p>
+    <button id="challenge" data-i18n="verify.challenge"></button>
+    <p id="holderResult"></p>
+  </section>
+</main>
+
+<script type="module">
+import { decodeProtectedHeader, decodeJwt, importJWK, jwtVerify } from 'https://cdn.jsdelivr.net/npm/jose@6.2.12/+esm';
+import { secp256k1 } from 'https://cdn.jsdelivr.net/npm/@noble/curves@2.4.0/secp256k1.js/+esm';
+import { keccak_256 } from 'https://cdn.jsdelivr.net/npm/@noble/hashes@2.4.0/sha3.js/+esm';
+import { t, onLangChange } from '/ui.js';
+
+const $ = (id) => document.getElementById(id);
+// Each verify() run gets a number; steps from an older run (e.g. before a language switch) are dropped.
+let run = 0;
+function step(text, ok = true, mine = run) {
+  if (mine !== run) return;
+  const li = document.createElement('li');
+  li.className = ok ? 'ok' : 'bad';
+  li.textContent = text;
+  $('steps').append(li);
+}
+
+// did:web:id.ldas.jp           -> https://id.ldas.jp/.well-known/did.json
+// did:web:example.com:users:a  -> https://example.com/users/a/did.json
+function didWebUrl(did) {
+  const parts = did.replace(/^did:web:/, '').split(':').map(decodeURIComponent);
+  const host = parts.shift();
+  const scheme = host.startsWith('localhost') ? 'http' : 'https';
+  return parts.length ? `${scheme}://${host}/${parts.join('/')}/did.json` : `${scheme}://${host}/.well-known/did.json`;
+}
+
+async function verify(jwt) {
+  const mine = ++run;
+  const say = (text, ok = true) => step(text, ok, mine);
+  $('steps').replaceChildren();
+  try {
+    const header = decodeProtectedHeader(jwt);
+    const claims = decodeJwt(jwt);
+    say(t('step.header', header.alg, header.kid));
+
+    const did = header.kid.split('#')[0];
+    if (did !== claims.issuer) throw new Error(t('step.mismatch', did, claims.issuer));
+    say(t('step.issuer', did));
+
+    const url = didWebUrl(did);
+    const doc = await (await fetch(url)).json();
+    say(t('step.didDoc', url));
+
+    const vm = doc.verificationMethod?.find((m) => m.id === header.kid);
+    if (!vm) throw new Error(t('step.noKey'));
+    if (!doc.assertionMethod?.includes(header.kid)) throw new Error(t('step.notAssertion'));
+    say(t('step.keyFound'));
+
+    const key = await importJWK(vm.publicKeyJwk, header.alg);
+    await jwtVerify(jwt, key, { typ: 'vc+jwt' }); // checks the signature and the expiry (exp)
+    say(t('step.sigOk'));
+
+    const s = claims.credentialSubject;
+    say(t('step.conclusion', claims.issuer, s.name, s.orcid || s.id, s.memberOf, claims.validUntil));
+    const ev = claims.evidence?.[0];
+    if (ev) say(t('step.evidence', ev.method));
+    const pkh = /^did:pkh:eip155:\d+:(0x[0-9a-fA-F]{40})$/.exec(s.id || '');
+    $('holder').hidden = !pkh;
+    $('holderResult').textContent = '';
+    holderAddr = pkh ? pkh[1] : '';
+    showHolderAddr();
+    if (!pkh) say(t('step.unbound'), false);
+  } catch (err) {
+    say(t('step.failed', err.message), false);
+  }
+}
+
+// Holder check: recover who signed a fresh message (same math as the server's src/eth.js).
+const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('');
+const utf8 = (t) => new TextEncoder().encode(t);
+function recoverAddress(message, sigHex) {
+  const sig = Uint8Array.from(sigHex.slice(2).match(/../g), (x) => parseInt(x, 16));
+  const body = utf8(message);
+  const digest = keccak_256(new Uint8Array([...utf8(`\x19Ethereum Signed Message:\n${body.length}`), ...body]));
+  const v = sig[64] >= 27 ? sig[64] - 27 : sig[64];
+  const pub = secp256k1.recoverPublicKey(new Uint8Array([v, ...sig.slice(0, 64)]), digest, { prehash: false });
+  return '0x' + hex(keccak_256(pub.length === 65 ? pub.slice(1) : secp256k1.Point.fromBytes(pub).toBytes(false).slice(1)).slice(-20));
+}
+
+$('challenge').onclick = async () => {
+  const out = $('holderResult');
+  try {
+    if (!window.ethereum) throw new Error(t('msg.noMetaMask'));
+    const expected = holderAddr.toLowerCase();
+    const [address] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const message = `Prove you hold this LDAS credential.\nNonce: ${crypto.randomUUID()}`;
+    const signature = await window.ethereum.request({ method: 'personal_sign', params: [message, address] });
+    const signer = recoverAddress(message, signature);
+    const ok = signer === expected;
+    out.className = ok ? 'ok' : 'bad';
+    out.textContent = ok ? t('holder.ok', signer) : t('holder.ng', signer, expected);
+  } catch (err) { out.className = 'bad'; out.textContent = t('holder.failed', err.message); }
+};
+
+// The holder paragraph is re-created on language change, so keep the address here.
+let holderAddr = '';
+const showHolderAddr = () => { const c = $('holderAddr'); if (c) c.textContent = holderAddr; };
+// Re-run the steps in the new language.
+onLangChange(() => { showHolderAddr(); if ($('jwt').value.trim() && $('steps').children.length) verify($('jwt').value.trim()); });
+
+$('go').onclick = () => verify($('jwt').value.trim());
+if (location.hash.length > 1) { $('jwt').value = location.hash.slice(1); verify($('jwt').value); }
+</script>
+</body>
+</html>

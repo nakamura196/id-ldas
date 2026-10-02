@@ -1,0 +1,21 @@
+# Auto-merge only Dependabot PRs that fix a known advisory (GHSA). Other updates wait for a human.
+name: Dependabot auto-merge
+on: pull_request
+permissions:
+  contents: write
+  pull-requests: write
+jobs:
+  auto-merge:
+    if: github.actor == 'dependabot[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3
+        id: meta
+        with: { github-token: "${{ secrets.GITHUB_TOKEN }}" }
+      - if: steps.meta.outputs.ghsa-id != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr review --approve "$PR_URL" -b "Auto-approving security update."
+          gh pr merge --auto --squash "$PR_URL"

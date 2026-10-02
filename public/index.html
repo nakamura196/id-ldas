@@ -1,0 +1,140 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LDAS ID</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1>LDAS ID</h1>
+  <p class="lead" data-i18n="home.lead"></p>
+
+  <section id="guest" hidden>
+    <h2 data-i18n="home.new"></h2>
+    <p data-i18n="home.newText"></p>
+    <a class="button" href="/auth/orcid" data-i18n="home.orcid"></a>
+    <h2 data-i18n="home.returning"></h2>
+    <button id="login" data-i18n="home.passkeyLogin"></button>
+  </section>
+
+  <section id="member" hidden>
+    <h2><span id="who"></span></h2>
+    <p>ORCID iD: <a id="orcid" target="_blank" rel="noopener"></a></p>
+    <p id="status"></p>
+    <p><span data-i18n="home.wallet"></span>: <span id="wallet"></span></p>
+    <div class="note">
+      <strong data-i18n="home.noteTitle"></strong>
+      <ul>
+        <li data-i18n-html="home.note1"></li>
+        <li data-i18n="home.note2"></li>
+        <li data-i18n="home.note3"></li>
+        <li data-i18n="home.note4"></li>
+      </ul>
+    </div>
+    <button id="linkWallet" class="secondary"></button>
+    <button id="issue" hidden data-i18n="home.issue"></button>
+    <button id="addPasskey" class="secondary" data-i18n="home.addPasskey"></button>
+    <button id="logout" class="secondary" data-i18n="home.logout"></button>
+    <div id="vc" hidden>
+      <h3 data-i18n="home.vcTitle"></h3>
+      <p data-i18n-html="home.vcText"></p>
+      <textarea id="jwt" readonly rows="6"></textarea>
+      <h3 data-i18n="home.payload"></h3>
+      <pre id="payload"></pre>
+    </div>
+  </section>
+
+  <p id="msg" role="status"></p>
+</main>
+
+<script type="module">
+import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@14.0.0/+esm';
+import { t, onLangChange, adminNav } from '/ui.js';
+
+const $ = (id) => document.getElementById(id);
+const msg = (text, bad) => { $('msg').textContent = text; $('msg').className = bad ? 'bad' : ''; };
+let user = null;
+let jwt = '';
+
+async function post(path, body) {
+  const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+function render() {
+  $('guest').hidden = !!user;
+  $('member').hidden = !user;
+  adminNav.hidden = !user?.isAdmin;
+  if (!user) return;
+  $('who').textContent = user.name;
+  $('orcid').textContent = user.orcid || '';
+  if (user.orcid) $('orcid').href = `https://orcid.org/${user.orcid}`;
+  $('status').textContent = t(`status.${user.status}`);
+  $('issue').hidden = user.status !== 'approved';
+  $('wallet').textContent = user.wallet || t('home.none');
+  $('linkWallet').textContent = t(user.wallet ? 'home.relink' : 'home.link');
+  if (jwt) $('toVerify').href = `/verify#${jwt}`; // the link is re-created when the language changes
+}
+onLangChange(render);
+
+async function refresh() {
+  ({ user } = await (await fetch('/api/me')).json());
+  render();
+}
+
+$('addPasskey').onclick = async () => {
+  try {
+    const optionsJSON = await post('/api/register/options');
+    const response = await startRegistration({ optionsJSON });
+    await post('/api/register/verify', response);
+    msg(t('msg.passkeyAdded'));
+  } catch (err) { msg(t('msg.passkeyFailed', err.message), true); }
+};
+
+// Linking a wallet = signing a one-time message. No transaction, no gas, nothing on chain.
+$('linkWallet').onclick = async () => {
+  try {
+    if (!window.ethereum) throw new Error(t('msg.noMetaMask'));
+    const [address] = await window.ethereum.request({ method: 'eth_requestAccounts' });
+    const { message } = await post('/api/wallet/challenge');
+    const signature = await window.ethereum.request({ method: 'personal_sign', params: [message, address] });
+    const { wallet } = await post('/api/wallet/verify', { address, signature });
+    msg(t('msg.linked', wallet));
+    $('vc').hidden = true;
+    jwt = '';
+    refresh();
+  } catch (err) { msg(t('msg.linkFailed', err.message), true); }
+};
+
+$('login').onclick = async () => {
+  try {
+    const optionsJSON = await post('/api/login/options');
+    const response = await startAuthentication({ optionsJSON });
+    await post('/api/login/verify', response);
+    msg(t('msg.loggedIn'));
+    refresh();
+  } catch (err) { msg(t('msg.loginFailed', err.message), true); }
+};
+
+$('logout').onclick = async () => { await post('/api/logout'); $('vc').hidden = true; jwt = ''; msg(''); refresh(); };
+
+$('issue').onclick = async () => {
+  try {
+    const res = await post('/api/credential');
+    jwt = res.jwt;
+    $('jwt').value = jwt;
+    $('payload').textContent = JSON.stringify(res.credential, null, 2);
+    $('vc').hidden = false;
+    render();
+  } catch (err) { msg(err.message, true); }
+};
+
+if (new URLSearchParams(location.search).get('orcid') === 'cancelled') msg(t('msg.orcidCancelled'), true);
+refresh();
+</script>
+</body>
+</html>

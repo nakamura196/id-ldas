@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LDAS ID Admin</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main>
+  <h1 data-i18n="admin.title"></h1>
+  <p class="lead" data-i18n="admin.lead"></p>
+  <table>
+    <thead><tr><th data-i18n="admin.who"></th><th data-i18n="admin.state"></th><th></th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p id="msg" role="status"></p>
+</main>
+
+<script type="module">
+import { t, onLangChange } from '/ui.js';
+const $ = (id) => document.getElementById(id);
+onLangChange(() => load());
+
+async function load() {
+  const r = await fetch('/api/admin/users');
+  const data = await r.json();
+  if (!r.ok) { $('msg').textContent = data.error === 'admin only' ? t('admin.only') : data.error; $('msg').className = 'bad'; return; }
+  $('rows').replaceChildren(...data.users.map((u) => {
+    const tr = document.createElement('tr');
+    const who = document.createElement('td');
+    const a = Object.assign(document.createElement('a'), { href: `https://orcid.org/${u.orcid}`, target: '_blank', rel: 'noopener', textContent: u.orcid });
+    who.append(u.name, document.createElement('br'), a);
+    if (u.wallet) who.append(document.createElement('br'), u.wallet);
+    const st = document.createElement('td');
+    st.textContent = t(`admin.${u.status}`);
+    const act = document.createElement('td');
+    for (const [status, text] of [['approved', t('admin.approve')], ['rejected', t('admin.reject')]]) {
+      if (u.status === status) continue;
+      const b = Object.assign(document.createElement('button'), { textContent: text, className: status === 'rejected' ? 'secondary' : '' });
+      b.onclick = async () => {
+        await fetch('/api/admin/decide', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id: u.id, status }) });
+        load();
+      };
+      act.append(b);
+    }
+    tr.append(who, st, act);
+    return tr;
+  }));
+}
+load();
+</script>
+</body>
+</html>
