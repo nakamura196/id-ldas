@@ -22,7 +22,9 @@
     // Comma-separated origins allowed for ?return_to= / OID4VP redirect_uri
     "ALLOWED_RETURN_ORIGINS": "https://*.ldas.jp,https://ldas.jp,http://localhost:*,http://127.0.0.1:*",
     // Default validity period (days) for issued VCs / SD-JWTs
-    "VC_TTL_DAYS": "30"
+    "VC_TTL_DAYS": "30",
+    // Sender address for institutional email verification (uses Resend verified domain ldas.jp)
+    "MAIL_FROM": "LDAS ID <noreply@ldas.jp>"
   }
   // Secret ISSUER_JWK (Ed25519 private key, JWK JSON) is set with `wrangler secret put`, from 1Password.
 }
