@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>LDAS ID</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
@@ -17,25 +18,40 @@
     <a class="button" href="/login" data-i18n="login.title"></a>
   </section>
 
+  <p id="msg" role="status"></p>
+
   <section id="member" hidden>
     <h2><span id="who"></span></h2>
     <p>ORCID iD: <a id="orcid" target="_blank" rel="noopener"></a></p>
     <p id="status"></p>
-    <p><span data-i18n="home.affiliation"></span>: <strong id="affiliation"></strong> <span id="emailDomain" style="color:var(--muted); font-size:0.9em;"></span></p>
+    <p>
+      <span data-i18n="home.affiliation"></span>:
+      <strong id="affiliation"></strong>
+      <span id="emailDomain" style="color:var(--muted); font-size:0.9em;"></span>
+      <span id="affilBadge" hidden style="display:inline-block; margin-left:6px; padding:2px 8px; border-radius:999px; font-size:0.78em; font-weight:700; background:#ecfdf5; color:#047857; border:1px solid #a7f3d0;" data-i18n="home.verifiedBadge"></span>
+    </p>
     <p><span data-i18n="home.wallet"></span>: <span id="wallet"></span></p>
 
     <div class="note" style="margin-bottom:16px;">
       <strong data-i18n="home.affilTitle"></strong>
-      <p style="margin:6px 0 10px; font-size:0.92em;" data-i18n="home.affilDesc"></p>
-      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;">
-        <input id="emailInput" type="email" style="flex:1; min-width:220px;" data-i18n-placeholder="home.emailPlaceholder">
-        <button id="sendEmailCode" type="button" class="secondary small" data-i18n="home.sendCode"></button>
-        <a id="grdmLink" class="button secondary small" href="/auth/grdm" hidden data-i18n="home.grdmLink"></a>
+      <div id="affilVerifiedCard" hidden style="margin:8px 0 4px; padding:10px 12px; border-radius:8px; background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; font-size:0.9em;">
+        <div style="font-weight:700;" id="affilVerifiedHeadline"></div>
+        <div style="font-size:0.86em; margin-top:4px; opacity:0.9;" id="affilVerifiedMeta"></div>
+        <button id="toggleAffilForm" type="button" class="secondary small" style="margin-top:8px;" data-i18n="home.reverifyAffil"></button>
       </div>
-      <div id="emailVerifyBox" hidden style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
-        <input id="codeInput" type="text" inputmode="numeric" maxlength="6" style="width:140px;" data-i18n-placeholder="home.codePlaceholder">
-        <button id="verifyEmailCode" type="button" class="small" data-i18n="home.verifyCode"></button>
-        <span id="devCodeHint" style="font-size:0.85em; color:var(--muted);"></span>
+      <div id="affilFormWrap">
+        <p style="margin:6px 0 10px; font-size:0.92em;" data-i18n="home.affilDesc"></p>
+        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;">
+          <input id="emailInput" type="email" style="flex:1; min-width:220px;" data-i18n-placeholder="home.emailPlaceholder">
+          <button id="sendEmailCode" type="button" class="secondary small" data-i18n="home.sendCode"></button>
+          <a id="grdmLink" class="button secondary small" href="/auth/grdm" hidden data-i18n="home.grdmLink"></a>
+        </div>
+        <div id="emailVerifyBox" hidden style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
+          <input id="codeInput" type="text" inputmode="numeric" maxlength="6" style="width:140px;" data-i18n-placeholder="home.codePlaceholder">
+          <button id="verifyEmailCode" type="button" class="small" data-i18n="home.verifyCode"></button>
+          <span id="devCodeHint" style="font-size:0.85em; color:var(--muted);"></span>
+        </div>
+        <p id="affilMsg" role="status" style="margin:8px 0 0; font-size:0.88em; font-weight:600;"></p>
       </div>
     </div>
 
@@ -61,8 +77,6 @@
       <pre id="payload"></pre>
     </div>
   </section>
-
-  <p id="msg" role="status"></p>
 </main>
 
 <script type="module">
@@ -81,6 +95,7 @@ let user = null;
 let jwt = '';
 let grdmEnabled = false;
 let emailChallengeId = '';
+let showAffilFormOverride = false;
 
 async function post(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
@@ -98,8 +113,24 @@ function render() {
   $('orcid').textContent = user.orcid || '';
   if (user.orcid) $('orcid').href = `https://orcid.org/${user.orcid}`;
   $('status').textContent = t(`status.${user.status}`);
+  const hasAffil = Boolean(user.affiliation || user.email_domain);
   $('affiliation').textContent = user.affiliation || t('home.none');
   $('emailDomain').textContent = user.email_domain ? `(${user.email_domain})` : '';
+  $('affilBadge').hidden = !hasAffil;
+  $('affilVerifiedCard').hidden = !hasAffil;
+  $('affilFormWrap').hidden = hasAffil && !showAffilFormOverride;
+  if (hasAffil) {
+    const methodLabel = user.affiliation_method === 'grdm-oauth' ? t('home.methodGrdm') : t('home.methodEmail');
+    const verifiedDate = user.affiliation_verified_at
+      ? new Date(user.affiliation_verified_at).toLocaleString()
+      : '';
+    $('affilVerifiedHeadline').textContent = t(
+      'home.affilVerifiedHeadline',
+      user.affiliation || user.email_domain || '',
+      user.email_domain ? ` (${user.email_domain})` : '',
+    );
+    $('affilVerifiedMeta').textContent = t('home.affilVerifiedMeta', methodLabel, verifiedDate);
+  }
   $('grdmLink').hidden = !grdmEnabled;
   $('issue').hidden = user.status !== 'approved';
   $('wallet').textContent = user.wallet || t('home.none');
@@ -115,7 +146,21 @@ async function refresh() {
   render();
 }
 
+$('toggleAffilForm').onclick = () => {
+  showAffilFormOverride = !showAffilFormOverride;
+  render();
+};
+
+const setAffilMsg = (text, bad = false) => {
+  const el = $('affilMsg');
+  el.textContent = text;
+  el.style.color = bad ? '#be123c' : '#047857';
+};
+
 $('sendEmailCode').onclick = async () => {
+  const btn = $('sendEmailCode');
+  btn.disabled = true;
+  setAffilMsg('送信中...');
   try {
     const email = $('emailInput').value.trim();
     if (!email) throw new Error(t('home.emailPlaceholder'));
@@ -123,11 +168,20 @@ $('sendEmailCode').onclick = async () => {
     emailChallengeId = res.challengeId;
     $('emailVerifyBox').hidden = false;
     $('devCodeHint').textContent = res.devCode ? `[localhost dev code: ${res.devCode}]` : '';
-    msg(t('msg.codeSent', res.emailDomain, res.affiliation));
-  } catch (err) { msg(err.message, true); }
+    const sentText = t('msg.codeSent', res.emailDomain, res.affiliation);
+    setAffilMsg(sentText, false);
+    msg(sentText);
+  } catch (err) {
+    setAffilMsg(err.message, true);
+    msg(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 $('verifyEmailCode').onclick = async () => {
+  const btn = $('verifyEmailCode');
+  btn.disabled = true;
   try {
     const code = $('codeInput').value.trim();
     const res = await post('/api/email/verify', { challengeId: emailChallengeId, code });
@@ -136,11 +190,19 @@ $('verifyEmailCode').onclick = async () => {
     $('codeInput').value = '';
     $('devCodeHint').textContent = '';
     emailChallengeId = '';
+    showAffilFormOverride = false;
     $('vc').hidden = true;
     jwt = '';
-    msg(t('msg.affilVerified', res.affiliation, res.emailDomain));
+    const okText = t('msg.affilVerified', res.affiliation, res.emailDomain);
+    setAffilMsg(okText, false);
+    msg(okText);
     refresh();
-  } catch (err) { msg(err.message, true); }
+  } catch (err) {
+    setAffilMsg(err.message, true);
+    msg(err.message, true);
+  } finally {
+    btn.disabled = false;
+  }
 };
 
 $('addPasskey').onclick = async () => {
