@@ -36,8 +36,13 @@ async function load() {
   $('rows').replaceChildren(...users.map((u) => {
     const tr = document.createElement('tr');
     const who = document.createElement('td');
-    const a = Object.assign(document.createElement('a'), { href: `https://orcid.org/${u.orcid}`, target: '_blank', rel: 'noopener', textContent: u.orcid });
-    who.append(u.name, document.createElement('br'), a);
+    who.append(u.name);
+    if (u.orcid) {
+      const a = Object.assign(document.createElement('a'), { href: `https://orcid.org/${u.orcid}`, target: '_blank', rel: 'noopener', textContent: u.orcid });
+      who.append(document.createElement('br'), a);
+    } else if (u.affiliation || u.email_domain) {
+      who.append(document.createElement('br'), [u.affiliation, u.email_domain ? `(${u.email_domain})` : ''].filter(Boolean).join(' '));
+    }
     if (u.wallet) who.append(document.createElement('br'), u.wallet);
     const st = document.createElement('td');
     st.textContent = t(`admin.${u.status}`);
