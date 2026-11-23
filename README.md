@@ -6,9 +6,11 @@ Live: https://id.ldas.jp
 
 - **Sign in with ORCID** (OpenID Connect). Having an ORCID iD is enough; an admin can stop someone afterwards.
 - **Link a wallet** by signing a one-time message in MetaMask (EIP-191). No transaction, no gas.
-- **Issue a credential** (W3C VC Data Model 2.0, secured as a JWT: `vc+jwt`, EdDSA), signed by `did:web:id.ldas.jp`.
+- **Issue a credential** (W3C VC Data Model 2.0 `vc+jwt` or IETF SD-JWT VC `dc+sd-jwt` with `vct`, EdDSA), signed by `did:web:id.ldas.jp`.
   With a linked wallet the subject is `did:pkh:eip155:11155111:<address>`, so only whoever holds that wallet can show it is theirs.
-- **Verify in the browser** (`/verify`): fetch the issuer's DID document, check the signature, then ask the presenter to sign a fresh message with the wallet (holder check). The ID server's database is never asked.
+- **OID4VP 1.0 + RFC 9901 Key Binding (`kb+jwt`)** (`/authorize`): parses `dcql_query`, generates an ephemeral P-256 holder key pair in the browser (`cnf.jwk`), signs a Key Binding JWT (`typ: "kb+jwt"`) containing `nonce`, `aud`, and `sd_hash`, and returns a DCQL-compliant JSON object in `#vp_token={"<query_id>":["<sd-jwt+kb>"]}`. (If an API caller omits `cnfJwk`, the server falls back to embedding `nonce`/`aud` in the issuer JWT as a simplified mode.)
+- **Signed W3C Bitstring Status List v1.0** (`/status/1`): served as an Ed25519-signed `application/vc+jwt` credential so verifiers authenticate the revocation list with `did:web:id.ldas.jp#key-1` before checking the bitstring.
+- **Verify in the browser** (`/verify`): fetch the issuer's DID document, check the VC signature and signed `/status/1` revocation list, then ask the presenter to sign a fresh message with the wallet (holder check). The ID server's database is never asked.
 - Passkeys: a signed-in person can add one to come back without ORCID.
 
 ## Pages and endpoints

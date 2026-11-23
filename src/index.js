@@ -343,6 +343,7 @@ async function encodeBitstring(revokedIndices) {
 
 async function statusListCredential(url, env) {
   const did = didFor(url);
+  const { privateKey } = await issuerKey(url, env);
   const rejectedRows = await db(env).prepare("SELECT status_index FROM users WHERE status = 'rejected' AND status_index IS NOT NULL").all();
   const selfRevokedRows = await db(env).prepare('SELECT idx FROM revoked_indices').all();
   const revokedIndices = [
@@ -350,24 +351,36 @@ async function statusListCredential(url, env) {
     ...selfRevokedRows.map((r) => Number(r.idx)),
   ];
   const encodedList = await encodeBitstring(revokedIndices);
-  const now = new Date().toISOString();
-  return json(
-    {
-      '@context': ['https://www.w3.org/ns/credentials/v2'],
-      id: `${url.origin}/status/1`,
-      type: ['VerifiableCredential', 'BitstringStatusListCredential'],
-      issuer: did,
-      validFrom: now,
-      credentialSubject: {
-        id: `${url.origin}/status/1#list`,
-        type: 'BitstringStatusList',
-        statusPurpose: 'revocation',
-        encodedList,
-      },
+  const now = new Date();
+  const statusCred = {
+    '@context': ['https://www.w3.org/ns/credentials/v2'],
+    id: `${url.origin}/status/1`,
+    type: ['VerifiableCredential', 'BitstringStatusListCredential'],
+    issuer: did,
+    iss: did,
+    iat: Math.floor(now.getTime() / 1000),
+    validFrom: now.toISOString(),
+    credentialSubject: {
+      id: `${url.origin}/status/1#list`,
+      type: 'BitstringStatusList',
+      statusPurpose: 'revocation',
+      encodedList,
     },
-    200,
-    { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' },
-  );
+  };
+  // W3C Bitstring Status List v1.0: sign the status list credential as a vc+jwt so verifiers can authenticate it.
+  const signedJwt = await new SignJWT(statusCred)
+    .setProtectedHeader({ alg: 'EdDSA', typ: 'vc+jwt', kid: `${did}#key-1` })
+    .setIssuedAt(Math.floor(now.getTime() / 1000))
+    .sign(privateKey);
+
+  return new Response(signedJwt, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/vc+jwt',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': 'no-store',
+    },
+  });
 }
 
 async function ensureStatusIndex(env, user) {
@@ -410,9 +423,21 @@ async function issueCredential(request, url, env) {
   if (!user) return json({ error: 'log in first' }, 401);
   if (user.status !== 'approved') return json({ error: 'not approved yet' }, 403);
   const reqBody = await request.json().catch(() => ({}));
-  const format = reqBody?.format === 'sd-jwt' ? 'sd-jwt' : 'vc+jwt';
+  const format = reqBody?.format === 'sd-jwt' || reqBody?.format === 'dc+sd-jwt' ? 'dc+sd-jwt' : 'vc+jwt';
   const nonce = typeof reqBody?.nonce === 'string' && reqBody.nonce.length <= 256 ? reqBody.nonce : undefined;
   const aud = typeof reqBody?.aud === 'string' && reqBody.aud.length <= 256 ? reqBody.aud : undefined;
+  // RFC 9901 Key Binding: when the holder browser provides its public key JWK (cnfJwk),
+  // bind it via `cnf.jwk` so the holder signs `nonce`, `aud`, and `sd_hash` in a `kb+jwt`.
+  const rawCnf = reqBody?.cnfJwk;
+  const cnfJwk =
+    rawCnf && typeof rawCnf === 'object' && typeof rawCnf.kty === 'string' && !rawCnf.d
+      ? {
+          kty: rawCnf.kty,
+          ...(rawCnf.crv ? { crv: rawCnf.crv } : {}),
+          ...(rawCnf.x ? { x: rawCnf.x } : {}),
+          ...(rawCnf.y ? { y: rawCnf.y } : {}),
+        }
+      : undefined;
   const ALL_SD_KEYS = ['name', 'orcid', 'memberOf', 'wallet', 'affiliation', 'emailDomain'];
   const requestedDisclose = Array.isArray(reqBody?.disclose)
     ? reqBody.disclose.filter((k) => ALL_SD_KEYS.includes(k))
@@ -427,14 +452,18 @@ async function issueCredential(request, url, env) {
   const credential = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', 'LdasMemberCredential'],
+    ...(format === 'dc+sd-jwt' ? { vct: `${url.origin}/credentials/member/v1` } : {}),
     issuer: did,
     iss: did,
     iat: Math.floor(now.getTime() / 1000),
     exp: Math.floor(until.getTime() / 1000),
     validFrom: now.toISOString(),
     validUntil: until.toISOString(),
-    ...(nonce ? { nonce } : {}),
-    ...(aud ? { aud } : {}),
+    ...(cnfJwk ? { cnf: { jwk: cnfJwk } } : {}),
+    // If cnf.jwk is bound, nonce/aud belong in the holder-signed kb+jwt (RFC 9901).
+    // Only embed nonce/aud in the issuer JWT as a simplified fallback when no holder key is bound.
+    ...(!cnfJwk && nonce ? { nonce } : {}),
+    ...(!cnfJwk && aud ? { aud } : {}),
     credentialSubject: {
       id: user.wallet ? `did:pkh:eip155:${env.WALLET_CHAIN_ID}:${user.wallet}` : `${ORCID}/${user.orcid}`,
       orcid: `${ORCID}/${user.orcid}`,
@@ -468,7 +497,7 @@ async function issueCredential(request, url, env) {
     }],
   };
 
-  if (format === 'sd-jwt') {
+  if (format === 'dc+sd-jwt') {
     const sdjwt = new SdJwtInstance({
       signer: async (data) => {
         const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(data));
@@ -490,14 +519,14 @@ async function issueCredential(request, url, env) {
     const issued = await sdjwt.issue(
       credential,
       { credentialSubject: { _sd: sdKeys } },
-      { header: { typ: 'vc+sd-jwt', kid: `${did}#key-1` } },
+      { header: { typ: 'dc+sd-jwt', kid: `${did}#key-1` } },
     );
     const presentFrame = { credentialSubject: {} };
     for (const k of sdKeys) {
       if (requestedDisclose.includes(k)) presentFrame.credentialSubject[k] = true;
     }
     const presentation = await sdjwt.present(issued, presentFrame);
-    return json({ jwt: presentation, format: 'sd-jwt', disclosed: requestedDisclose, credential });
+    return json({ jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential });
   }
 
   const jwt = await new SignJWT(credential)

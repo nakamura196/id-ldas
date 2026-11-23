@@ -76,7 +76,27 @@ async function verify(jwt) {
     // Check W3C Bitstring Status List revocation if credentialStatus is present.
     const st = claims.credentialStatus;
     if (st && st.type === 'BitstringStatusListEntry' && st.statusListCredential) {
-      const listCred = await (await fetch(st.statusListCredential)).json();
+      const listRes = await fetch(st.statusListCredential, {
+        headers: { Accept: 'application/vc+jwt, application/json' },
+      });
+      if (!listRes.ok) throw new Error(`Status List fetch failed (${listRes.status})`);
+      const listText = (await listRes.text()).trim();
+      let listCred;
+      if (listText.split('.').length === 3 && !listText.startsWith('{')) {
+        // W3C Bitstring Status List v1.0: verify issuer's Ed25519 vc+jwt signature before trusting the bitstring.
+        const slHeader = decodeProtectedHeader(listText);
+        const slDid = slHeader.kid?.split('#')[0];
+        const slDoc = slDid === did ? doc : await (await fetch(didWebUrl(slDid))).json();
+        const slVm = slDoc.verificationMethod?.find((m) => m.id === slHeader.kid);
+        if (!slVm || !slDoc.assertionMethod?.includes(slHeader.kid)) {
+          throw new Error('Status List signing key not found in DID document');
+        }
+        const slKey = await importJWK(slVm.publicKeyJwk, slHeader.alg);
+        const slVerified = await jwtVerify(listText, slKey, { typ: 'vc+jwt' });
+        listCred = slVerified.payload;
+      } else {
+        listCred = JSON.parse(listText);
+      }
       const encoded = String(listCred?.credentialSubject?.encodedList || '');
       const b64 = encoded.replace(/^u/, '').replace(/-/g, '+').replace(/_/g, '/');
       const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';

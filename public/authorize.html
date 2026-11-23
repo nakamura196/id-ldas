@@ -96,7 +96,7 @@
       <details class="tech-details">
         <summary data-i18n="authz.techSummary"></summary>
         <p>Protocol: <code id="protocolBadge"></code></p>
-        <p>Issuer DID: <code>did:web:id.ldas.jp</code> · Format: <code>vc+sd-jwt (RFC 9901)</code></p>
+        <p>Issuer DID: <code>did:web:id.ldas.jp</code> · Format: <code>dc+sd-jwt (RFC 9901 / kb+jwt)</code></p>
         <p id="nonceInfo"></p>
       </details>
     </section>
@@ -117,13 +117,18 @@ let oid4vpMode = false;
 let reqNonce = null;
 let reqState = null;
 let reqClientId = null;
+let dcqlCredentialId = 'member-credential';
 let requiredClaims = new Set();
 
-function parseRequiredClaimsFromDcql(raw) {
+function parseDcql(raw) {
   const req = new Set();
-  if (!raw) return req;
+  let credId = 'member-credential';
+  if (!raw) return { req, credId };
   try {
     const q = JSON.parse(raw);
+    if (Array.isArray(q.credentials) && q.credentials[0]?.id) {
+      credId = String(q.credentials[0].id);
+    }
     for (const cred of q.credentials || []) {
       for (const claim of cred.claims || []) {
         const path = Array.isArray(claim.path) ? claim.path : [];
@@ -132,7 +137,36 @@ function parseRequiredClaimsFromDcql(raw) {
       }
     }
   } catch {}
-  return req;
+  return { req, credId };
+}
+
+function toB64Url(bytes) {
+  let bin = '';
+  for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+async function signKeyBindingJwt(sdJwtWithoutKb, privateKey, { aud, nonce }) {
+  const sdHashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sdJwtWithoutKb));
+  const sd_hash = toB64Url(new Uint8Array(sdHashBuf));
+  const header = toB64Url(new TextEncoder().encode(JSON.stringify({ alg: 'ES256', typ: 'kb+jwt' })));
+  const payload = toB64Url(
+    new TextEncoder().encode(
+      JSON.stringify({
+        iat: Math.floor(Date.now() / 1000),
+        aud,
+        ...(nonce ? { nonce } : {}),
+        sd_hash,
+      }),
+    ),
+  );
+  const signingInput = `${header}.${payload}`;
+  const sigBuf = await crypto.subtle.sign(
+    { name: 'ECDSA', hash: 'SHA-256' },
+    privateKey,
+    new TextEncoder().encode(signingInput),
+  );
+  return `${signingInput}.${toB64Url(new Uint8Array(sigBuf))}`;
 }
 
 function matchesOriginPattern(u, pattern) {
@@ -235,18 +269,38 @@ $('approveBtn').onclick = async () => {
     if ($('chkEmailDomain').checked && user.email_domain) disclose.push('emailDomain');
     if ($('chkWallet').checked && user.wallet) disclose.push('wallet');
 
+    // Generate an ephemeral P-256 holder key pair in the browser (RFC 9901 Key Binding)
+    const holderKeys = await crypto.subtle.generateKey(
+      { name: 'ECDSA', namedCurve: 'P-256' },
+      false,
+      ['sign', 'verify'],
+    );
+    const holderPubJwk = await crypto.subtle.exportKey('jwk', holderKeys.publicKey);
+    const cnfJwk = { kty: holderPubJwk.kty, crv: holderPubJwk.crv, x: holderPubJwk.x, y: holderPubJwk.y };
+    const audience = reqClientId || targetUrl.origin;
+
     const res = await post('/api/credential', {
-      format: 'sd-jwt',
+      format: 'dc+sd-jwt',
       disclose,
-      ...(reqNonce ? { nonce: reqNonce } : {}),
-      aud: reqClientId || targetUrl.origin,
+      cnfJwk,
     });
+
+    // Ensure SD-JWT ends with '~' before appending kb+jwt per RFC 9901 Section 4
+    const sdJwtBase = res.jwt.endsWith('~') ? res.jwt : `${res.jwt}~`;
+    const kbJwt = await signKeyBindingJwt(sdJwtBase, holderKeys.privateKey, {
+      aud: audience,
+      nonce: reqNonce || undefined,
+    });
+    const fullSdJwt = `${sdJwtBase}${kbJwt}`;
+
     if (oid4vpMode) {
-      const frag = new URLSearchParams({ vp_token: res.jwt });
+      // OID4VP 1.0 DCQL response format: vp_token is a JSON object mapping query ID -> [credential]
+      const vpTokenObj = { [dcqlCredentialId]: [fullSdJwt] };
+      const frag = new URLSearchParams({ vp_token: JSON.stringify(vpTokenObj) });
       if (reqState) frag.set('state', reqState);
       location.href = `${targetUrl.toString()}#${frag.toString()}`;
     } else {
-      location.href = `${targetUrl.toString()}#vc=${encodeURIComponent(res.jwt)}`;
+      location.href = `${targetUrl.toString()}#vc=${encodeURIComponent(fullSdJwt)}`;
     }
   } catch (err) {
     msg(err.message, true);
@@ -271,7 +325,9 @@ $('switchBtn').onclick = async () => {
   reqNonce = params.get('nonce');
   reqState = params.get('state');
   reqClientId = params.get('client_id');
-  requiredClaims = parseRequiredClaimsFromDcql(params.get('dcql_query'));
+  const parsedDcql = parseDcql(params.get('dcql_query'));
+  requiredClaims = parsedDcql.req;
+  dcqlCredentialId = parsedDcql.credId;
 
   const rawRedirect = oid4vpMode ? params.get('redirect_uri') : params.get('return_to');
   targetUrl = parseAllowedReturnTo(rawRedirect, patterns);
