@@ -14,9 +14,7 @@
   <section id="guest" hidden>
     <h2 data-i18n="home.new"></h2>
     <p data-i18n="home.newText"></p>
-    <a class="button" href="/auth/orcid" data-i18n="home.orcid"></a>
-    <h2 data-i18n="home.returning"></h2>
-    <button id="login" data-i18n="home.passkeyLogin"></button>
+    <a class="button" href="/login" data-i18n="login.title"></a>
   </section>
 
   <section id="member" hidden>
@@ -35,6 +33,7 @@
     </div>
     <button id="linkWallet" class="secondary"></button>
     <button id="issue" hidden data-i18n="home.issue"></button>
+    <button id="revokeSelf" class="danger" data-i18n="home.revokeSelf"></button>
     <button id="addPasskey" class="secondary" data-i18n="home.addPasskey"></button>
     <button id="logout" class="secondary" data-i18n="home.logout"></button>
     <div id="vc" hidden>
@@ -50,8 +49,14 @@
 </main>
 
 <script type="module">
-import { startRegistration, startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@14.0.0/+esm';
+import { startRegistration } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@14.0.0/+esm';
 import { t, onLangChange, adminNav } from '/ui.js';
+
+// Backward compatibility: redirect /?return_to=... to the dedicated /authorize page.
+const incomingReturn = new URLSearchParams(location.search).get('return_to');
+if (incomingReturn) {
+  location.replace(`/authorize?return_to=${encodeURIComponent(incomingReturn)}`);
+}
 
 const $ = (id) => document.getElementById(id);
 const msg = (text, bad) => { $('msg').textContent = text; $('msg').className = bad ? 'bad' : ''; };
@@ -77,7 +82,7 @@ function render() {
   $('issue').hidden = user.status !== 'approved';
   $('wallet').textContent = user.wallet || t('home.none');
   $('linkWallet').textContent = t(user.wallet ? 'home.relink' : 'home.link');
-  if (jwt) $('toVerify').href = `/verify#${jwt}`; // the link is re-created when the language changes
+  if (jwt) $('toVerify').href = `/verify#${jwt}`;
 }
 onLangChange(render);
 
@@ -110,14 +115,14 @@ $('linkWallet').onclick = async () => {
   } catch (err) { msg(t('msg.linkFailed', err.message), true); }
 };
 
-$('login').onclick = async () => {
+$('revokeSelf').onclick = async () => {
+  if (!confirm(t('home.revokeConfirm'))) return;
   try {
-    const optionsJSON = await post('/api/login/options');
-    const response = await startAuthentication({ optionsJSON });
-    await post('/api/login/verify', response);
-    msg(t('msg.loggedIn'));
-    refresh();
-  } catch (err) { msg(t('msg.loginFailed', err.message), true); }
+    const res = await post('/api/credential/revoke');
+    $('vc').hidden = true;
+    jwt = '';
+    msg(t('msg.revokedSelf', res.revokedIndex, res.newStatusIndex));
+  } catch (err) { msg(err.message, true); }
 };
 
 $('logout').onclick = async () => { await post('/api/logout'); $('vc').hidden = true; jwt = ''; msg(''); refresh(); };

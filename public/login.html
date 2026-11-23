@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign in — LDAS ID</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="auth-page">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-badge">LDAS ID · UTokyo</div>
+      <h1 data-i18n="login.title"></h1>
+      <p class="lead" data-i18n="login.lead"></p>
+    </div>
+
+    <section id="nextNotice" class="note" hidden>
+      <p id="nextNoticeText" style="margin:0;"></p>
+    </section>
+
+    <section id="authCard">
+      <a id="orcidBtn" class="button orcid full" href="/auth/orcid" data-i18n="home.orcid"></a>
+      <div class="divider"><span data-i18n="home.returning"></span></div>
+      <button id="passkeyBtn" class="secondary full" data-i18n="home.passkeyLogin"></button>
+    </section>
+
+    <p id="msg" role="status"></p>
+  </div>
+</main>
+
+<script type="module">
+import { startAuthentication } from 'https://cdn.jsdelivr.net/npm/@simplewebauthn/browser@14.0.0/+esm';
+import { t, onLangChange } from '/ui.js';
+
+const $ = (id) => document.getElementById(id);
+const msg = (text, bad) => { $('msg').textContent = text; $('msg').className = bad ? 'bad' : ''; };
+
+function safeNextPath(raw) {
+  if (!raw || !raw.startsWith('/') || raw.startsWith('//')) return '/';
+  return raw;
+}
+
+const nextPath = safeNextPath(new URLSearchParams(location.search).get('next'));
+$('orcidBtn').href = `/auth/orcid?next=${encodeURIComponent(nextPath)}`;
+
+function renderNotice() {
+  if (nextPath !== '/') {
+    $('nextNotice').hidden = false;
+    $('nextNoticeText').textContent = t('login.nextHint');
+  }
+}
+onLangChange(renderNotice);
+renderNotice();
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+$('passkeyBtn').onclick = async () => {
+  try {
+    const optionsJSON = await post('/api/login/options');
+    const response = await startAuthentication({ optionsJSON });
+    await post('/api/login/verify', response);
+    location.href = nextPath;
+  } catch (err) {
+    msg(t('msg.loginFailed', err.message), true);
+  }
+};
+
+(async () => {
+  const { user } = await (await fetch('/api/me')).json();
+  if (user) location.replace(nextPath);
+})();
+</script>
+</body>
+</html>

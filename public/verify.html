@@ -73,6 +73,26 @@ async function verify(jwt) {
     await jwtVerify(jwt, key, { typ: 'vc+jwt' }); // checks the signature and the expiry (exp)
     say(t('step.sigOk'));
 
+    // Check W3C Bitstring Status List revocation if credentialStatus is present.
+    const st = claims.credentialStatus;
+    if (st && st.type === 'BitstringStatusListEntry' && st.statusListCredential) {
+      const listCred = await (await fetch(st.statusListCredential)).json();
+      const encoded = String(listCred?.credentialSubject?.encodedList || '');
+      const b64 = encoded.replace(/^u/, '').replace(/-/g, '+').replace(/_/g, '/');
+      const pad = b64.length % 4 ? '='.repeat(4 - (b64.length % 4)) : '';
+      const raw = Uint8Array.from(atob(b64 + pad), (c) => c.charCodeAt(0));
+      const decompressed = new Uint8Array(
+        await new Response(new Blob([raw]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer(),
+      );
+      const idx = Number(st.statusListIndex);
+      const revoked = ((decompressed[idx >> 3] >> (7 - (idx & 7))) & 1) === 1;
+      if (revoked) {
+        say(t('step.statusRevoked', st.statusListCredential, idx), false);
+        return;
+      }
+      say(t('step.statusOk', st.statusListCredential, idx));
+    }
+
     const s = claims.credentialSubject;
     say(t('step.conclusion', claims.issuer, s.name, s.orcid || s.id, s.memberOf, claims.validUntil));
     const ev = claims.evidence?.[0];

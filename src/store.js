@@ -11,7 +11,8 @@ const SCHEMA = `
     status      TEXT NOT NULL DEFAULT 'pending',  -- pending | approved | rejected
     approved_by TEXT,                     -- ORCID iD of the admin who decided
     approved_at INTEGER,
-    wallet      TEXT                      -- Ethereum address the person proved they control
+    wallet      TEXT,                     -- Ethereum address the person proved they control
+    status_index INTEGER                  -- bit position in W3C Bitstring Status List (/status/1)
   );
   
   CREATE TABLE IF NOT EXISTS credentials (
@@ -37,6 +38,13 @@ const SCHEMA = `
     user_id    TEXT NOT NULL REFERENCES users(id),
     expires_at INTEGER NOT NULL
   );
+
+  -- Indices explicitly revoked by the user (self-revocation) in W3C Bitstring Status List (/status/1).
+  CREATE TABLE IF NOT EXISTS revoked_indices (
+    idx        INTEGER PRIMARY KEY,
+    user_id    TEXT NOT NULL REFERENCES users(id),
+    revoked_at INTEGER NOT NULL
+  );
 `;
 
 // Columns added after the first deploy (2026-10-02). Old databases get them here.
@@ -46,6 +54,7 @@ const MIGRATIONS = [
   "ALTER TABLE users ADD COLUMN approved_by TEXT",
   "ALTER TABLE users ADD COLUMN approved_at INTEGER",
   "ALTER TABLE users ADD COLUMN wallet TEXT",
+  "ALTER TABLE users ADD COLUMN status_index INTEGER",
 ];
 
 export class Store extends DurableObject {
@@ -56,6 +65,14 @@ export class Store extends DurableObject {
     for (const m of MIGRATIONS) if (!have.has(m.split(' ')[5])) ctx.storage.sql.exec(m);
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_orcid ON users(orcid)');
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_wallet ON users(wallet)');
+    ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_status_index ON users(status_index)');
+    // Backfill status_index for existing users created before Bitstring Status List support.
+    const maxRow = ctx.storage.sql.exec('SELECT COALESCE(MAX(status_index), -1) AS m FROM users').toArray()[0];
+    let nextIdx = Number(maxRow?.m ?? -1) + 1;
+    const missing = ctx.storage.sql.exec('SELECT id FROM users WHERE status_index IS NULL ORDER BY created_at ASC').toArray();
+    for (const row of missing) {
+      ctx.storage.sql.exec('UPDATE users SET status_index = ? WHERE id = ?', nextIdx++, row.id);
+    }
   }
   first(sql, params) {
     return this.ctx.storage.sql.exec(sql, ...params).toArray()[0] ?? null;

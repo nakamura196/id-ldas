@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authorize — LDAS ID</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="auth-page">
+  <div class="card">
+    <div class="card-header">
+      <div class="card-badge">LDAS ID · UTokyo</div>
+      <h1 data-i18n="authz.title"></h1>
+      <p class="lead" data-i18n="authz.lead"></p>
+    </div>
+
+    <section id="invalidBox" class="note" hidden>
+      <p id="invalidMsg"></p>
+      <p><a href="/" data-i18n="verify.back"></a></p>
+    </section>
+
+    <section id="consentBox" hidden>
+      <div class="target-pill">
+        <span id="targetOrigin"></span>
+      </div>
+
+      <p style="font-size:13.5px; color:var(--muted); margin:0 0 8px;" data-i18n="authz.requestText"></p>
+
+      <div class="claim-list">
+        <label class="claim-row" id="rowName">
+          <input type="checkbox" id="chkName" checked>
+          <span class="claim-body">
+            <span class="claim-label" data-i18n="authz.claimName"></span>
+            <span class="claim-value" id="cName"></span>
+          </span>
+          <span class="pill pill-opt" id="reqName"></span>
+        </label>
+
+        <label class="claim-row" id="rowOrcid">
+          <input type="checkbox" id="chkOrcid" checked>
+          <span class="claim-body">
+            <span class="claim-label">ORCID iD</span>
+            <span class="claim-value" id="cOrcid"></span>
+          </span>
+          <span class="pill pill-opt" id="reqOrcid"></span>
+        </label>
+
+        <label class="claim-row" id="rowMember">
+          <input type="checkbox" id="chkMember" checked>
+          <span class="claim-body">
+            <span class="claim-label" data-i18n="authz.claimMember"></span>
+            <span class="claim-value">LDAS</span>
+          </span>
+          <span class="pill pill-opt" id="reqMember"></span>
+        </label>
+
+        <label class="claim-row" id="rowWallet">
+          <input type="checkbox" id="chkWallet" checked>
+          <span class="claim-body">
+            <span class="claim-label" data-i18n="home.wallet"></span>
+            <span class="claim-value" id="cWallet"></span>
+          </span>
+          <span class="pill pill-opt" id="reqWallet"></span>
+        </label>
+      </div>
+
+      <p id="notApproved" class="bad" hidden></p>
+
+      <div class="action-bar">
+        <button id="approveBtn" class="full" data-i18n="authz.approve"></button>
+        <div class="action-row" style="justify-content:space-between;">
+          <button id="switchBtn" class="secondary small" data-i18n="authz.switchAccount"></button>
+          <button id="cancelBtn" class="secondary small" data-i18n="authz.cancel"></button>
+        </div>
+      </div>
+
+      <details class="tech-details">
+        <summary data-i18n="authz.techSummary"></summary>
+        <p>Protocol: <code id="protocolBadge"></code></p>
+        <p>Issuer DID: <code>did:web:id.ldas.jp</code> · Format: <code>vc+sd-jwt (RFC 9901)</code></p>
+        <p id="nonceInfo"></p>
+      </details>
+    </section>
+
+    <p id="msg" role="status"></p>
+  </div>
+</main>
+
+<script type="module">
+import { t, onLangChange } from '/ui.js';
+
+const $ = (id) => document.getElementById(id);
+const msg = (text, bad) => { $('msg').textContent = text; $('msg').className = bad ? 'bad' : ''; };
+
+let user = null;
+let targetUrl = null;
+let oid4vpMode = false;
+let reqNonce = null;
+let reqState = null;
+let reqClientId = null;
+let requiredClaims = new Set();
+
+function parseRequiredClaimsFromDcql(raw) {
+  const req = new Set();
+  if (!raw) return req;
+  try {
+    const q = JSON.parse(raw);
+    for (const cred of q.credentials || []) {
+      for (const claim of cred.claims || []) {
+        const path = Array.isArray(claim.path) ? claim.path : [];
+        const key = path[path.length - 1];
+        if (['name', 'orcid', 'memberOf', 'wallet'].includes(key)) req.add(key);
+      }
+    }
+  } catch {}
+  return req;
+}
+
+function matchesOriginPattern(u, pattern) {
+  const m = /^(https?):\/\/(\*\.[^/:]+|[^/:]+)(?::(\*|\d+))?$/.exec(pattern);
+  if (!m) return false;
+  const [, proto, hostPat, portPat] = m;
+  if (u.protocol !== `${proto}:`) return false;
+  if (hostPat.startsWith('*.')) {
+    const suffix = hostPat.slice(1);
+    if (!u.hostname.endsWith(suffix) || u.hostname.length <= suffix.length) return false;
+  } else if (u.hostname !== hostPat) {
+    return false;
+  }
+  if (portPat && portPat !== '*' && u.port !== portPat) return false;
+  if (!portPat && u.port) return false;
+  return true;
+}
+
+function parseAllowedReturnTo(raw, patterns) {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    if (!patterns.some((pat) => matchesOriginPattern(u, pat))) return null;
+    u.hash = '';
+    return u;
+  } catch {
+    return null;
+  }
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body ?? {}),
+  });
+  const data = await r.json();
+  if (!r.ok) throw new Error(data.error || r.statusText);
+  return data;
+}
+
+function render() {
+  if (!targetUrl || !user) return;
+  $('consentBox').hidden = false;
+  $('targetOrigin').textContent = reqClientId || targetUrl.origin;
+  $('protocolBadge').textContent = oid4vpMode ? 'OID4VP (vp_token)' : 'return_to';
+  $('nonceInfo').textContent = reqNonce ? `nonce: ${reqNonce}` : '';
+  $('cName').textContent = user.name || '';
+  $('cOrcid').textContent = user.orcid || '';
+  $('cWallet').textContent = user.wallet || t('home.none');
+
+  const map = [
+    ['name', 'chkName', 'reqName', 'rowName'],
+    ['orcid', 'chkOrcid', 'reqOrcid', 'rowOrcid'],
+    ['memberOf', 'chkMember', 'reqMember', 'rowMember'],
+    ['wallet', 'chkWallet', 'reqWallet', 'rowWallet'],
+  ];
+  for (const [key, chkId, reqId, rowId] of map) {
+    const isReq = requiredClaims.has(key);
+    const badge = $(reqId);
+    badge.textContent = isReq ? t('authz.required') : t('authz.optional');
+    badge.className = isReq ? 'pill pill-req' : 'pill pill-opt';
+    $(rowId).classList.toggle('is-required', isReq);
+
+    if (key === 'wallet' && !user.wallet) {
+      $(chkId).checked = false;
+      $(chkId).disabled = true;
+    } else if (isReq) {
+      $(chkId).checked = true;
+      $(chkId).disabled = true;
+    } else {
+      $(chkId).disabled = false;
+    }
+  }
+
+  const approved = user.status === 'approved';
+  $('approveBtn').hidden = !approved;
+  $('notApproved').hidden = approved;
+  if (!approved) $('notApproved').textContent = t(`status.${user.status}`);
+}
+onLangChange(render);
+
+$('approveBtn').onclick = async () => {
+  if (!targetUrl) return;
+  try {
+    const disclose = [];
+    if ($('chkName').checked) disclose.push('name');
+    if ($('chkOrcid').checked) disclose.push('orcid');
+    if ($('chkMember').checked) disclose.push('memberOf');
+    if ($('chkWallet').checked && user.wallet) disclose.push('wallet');
+
+    const res = await post('/api/credential', {
+      format: 'sd-jwt',
+      disclose,
+      ...(reqNonce ? { nonce: reqNonce } : {}),
+      aud: reqClientId || targetUrl.origin,
+    });
+    if (oid4vpMode) {
+      const frag = new URLSearchParams({ vp_token: res.jwt });
+      if (reqState) frag.set('state', reqState);
+      location.href = `${targetUrl.toString()}#${frag.toString()}`;
+    } else {
+      location.href = `${targetUrl.toString()}#vc=${encodeURIComponent(res.jwt)}`;
+    }
+  } catch (err) {
+    msg(err.message, true);
+  }
+};
+
+$('cancelBtn').onclick = () => {
+  location.href = targetUrl ? targetUrl.toString() : '/';
+};
+
+$('switchBtn').onclick = async () => {
+  await post('/api/logout');
+  location.href = `/login?next=${encodeURIComponent(location.pathname + location.search)}`;
+};
+
+(async () => {
+  const data = await (await fetch('/api/me')).json();
+  const patterns = data.allowedReturnOrigins || [];
+  const params = new URLSearchParams(location.search);
+  const responseType = params.get('response_type');
+  oid4vpMode = responseType === 'vp_token';
+  reqNonce = params.get('nonce');
+  reqState = params.get('state');
+  reqClientId = params.get('client_id');
+  requiredClaims = parseRequiredClaimsFromDcql(params.get('dcql_query'));
+
+  const rawRedirect = oid4vpMode ? params.get('redirect_uri') : params.get('return_to');
+  targetUrl = parseAllowedReturnTo(rawRedirect, patterns);
+
+  if (!targetUrl) {
+    $('invalidBox').hidden = false;
+    $('invalidMsg').textContent = rawRedirect ? t('home.returnInvalid') : t('authz.missingReturn');
+    return;
+  }
+
+  if (!data.user) {
+    const next = `${location.pathname}${location.search}`;
+    location.replace(`/login?next=${encodeURIComponent(next)}`);
+    return;
+  }
+
+  user = data.user;
+  render();
+})();
+</script>
+</body>
+</html>

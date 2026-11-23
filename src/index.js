@@ -18,6 +18,7 @@ import {
 } from '@simplewebauthn/server';
 import { isoBase64URL } from '@simplewebauthn/server/helpers';
 import { SignJWT, importJWK, generateKeyPair, exportJWK, createRemoteJWKSet, jwtVerify } from 'jose';
+import { SdJwtInstance, uint8ArrayToBase64Url } from '@sd-jwt/core';
 import { db } from './store.js';
 import { recoverAddress, checksum } from './eth.js';
 
@@ -35,6 +36,7 @@ export default {
     const url = new URL(request.url);
     try {
       if (url.pathname === '/.well-known/did.json') return await didDocument(url, env);
+      if (url.pathname === '/status/1') return await statusListCredential(url, env);
       if (url.pathname === '/auth/orcid') return await orcidStart(url, env);
       if (url.pathname === '/auth/orcid/callback') return await orcidCallback(request, url, env);
       if (url.pathname.startsWith('/api/')) return await api(request, url, env);
@@ -61,6 +63,7 @@ async function api(request, url, env) {
     case 'GET /api/me':                return me(request, env);
     case 'POST /api/logout':           return logout(request, env);
     case 'POST /api/credential':       return issueCredential(request, url, env);
+    case 'POST /api/credential/revoke': return revokeOwnCredential(request, env);
     case 'POST /api/wallet/challenge': return walletChallenge(request, url, env);
     case 'POST /api/wallet/verify':    return walletVerify(request, env);
     case 'GET /api/admin/users':       return adminUsers(request, env);
@@ -193,11 +196,18 @@ async function withChallenge(env, options, { userId = null, name = null }) {
 // It does not tell us they are a researcher we trust; that is the admin's approval below.
 // ---------------------------------------------------------------------------
 
+function safeNextPath(raw) {
+  if (!raw || typeof raw !== 'string') return '/';
+  if (!raw.startsWith('/') || raw.startsWith('//')) return '/';
+  return raw;
+}
+
 async function orcidStart(url, env) {
   const state = crypto.randomUUID();
   const nonce = crypto.randomUUID();
-  await db(env).prepare('INSERT INTO challenges (id, challenge, user_id, name, expires_at) VALUES (?, ?, NULL, NULL, ?)')
-    .bind(state, nonce, Date.now() + CHALLENGE_TTL).run();
+  const nextPath = safeNextPath(url.searchParams.get('next'));
+  await db(env).prepare('INSERT INTO challenges (id, challenge, user_id, name, expires_at) VALUES (?, ?, NULL, ?, ?)')
+    .bind(state, nonce, nextPath, Date.now() + CHALLENGE_TTL).run();
   const auth = new URL(`${ORCID}/oauth/authorize`);
   auth.search = new URLSearchParams({
     client_id: env.ORCID_CLIENT_ID,
@@ -246,7 +256,7 @@ async function orcidCallback(request, url, env) {
   } else {
     await db(env).prepare('UPDATE users SET name = ? WHERE id = ?').bind(name, user.id).run();
   }
-  return new Response(null, { status: 302, headers: { Location: '/', 'Set-Cookie': await newSession(env, user.id) } });
+  return new Response(null, { status: 302, headers: { Location: safeNextPath(ch.name), 'Set-Cookie': await newSession(env, user.id) } });
 }
 
 function isAdminOrcid(env, orcid) {
@@ -287,7 +297,11 @@ async function currentUser(request, env) {
 async function me(request, env) {
   const user = await currentUser(request, env);
   if (user) user.isAdmin = isAdminOrcid(env, user.orcid);
-  return json({ user });
+  const allowedReturnOrigins = (env.ALLOWED_RETURN_ORIGINS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return json({ user, allowedReturnOrigins });
 }
 
 async function logout(request, env) {
@@ -300,29 +314,131 @@ async function logout(request, env) {
 // Verifiable Credential (W3C VC Data Model 2.0, secured as a JWT: "vc+jwt")
 // ---------------------------------------------------------------------------
 
+const STATUS_LIST_BYTES = 16384; // 131,072 bits (W3C Bitstring Status List v1.0 minimum size)
+
+async function encodeBitstring(revokedIndices) {
+  const bytes = new Uint8Array(STATUS_LIST_BYTES);
+  for (const idx of revokedIndices) {
+    if (idx >= 0 && idx < STATUS_LIST_BYTES * 8) {
+      // W3C Bitstring Status List uses MSB-first bit ordering inside each byte.
+      bytes[idx >> 3] |= 1 << (7 - (idx & 7));
+    }
+  }
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('gzip'));
+  const compressed = new Uint8Array(await new Response(stream).arrayBuffer());
+  let bin = '';
+  for (let i = 0; i < compressed.length; i++) bin += String.fromCharCode(compressed[i]);
+  const b64url = btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  return `u${b64url}`; // multibase base64url (no padding)
+}
+
+async function statusListCredential(url, env) {
+  const did = didFor(url);
+  const rejectedRows = await db(env).prepare("SELECT status_index FROM users WHERE status = 'rejected' AND status_index IS NOT NULL").all();
+  const selfRevokedRows = await db(env).prepare('SELECT idx FROM revoked_indices').all();
+  const revokedIndices = [
+    ...rejectedRows.map((r) => Number(r.status_index)),
+    ...selfRevokedRows.map((r) => Number(r.idx)),
+  ];
+  const encodedList = await encodeBitstring(revokedIndices);
+  const now = new Date().toISOString();
+  return json(
+    {
+      '@context': ['https://www.w3.org/ns/credentials/v2'],
+      id: `${url.origin}/status/1`,
+      type: ['VerifiableCredential', 'BitstringStatusListCredential'],
+      issuer: did,
+      validFrom: now,
+      credentialSubject: {
+        id: `${url.origin}/status/1#list`,
+        type: 'BitstringStatusList',
+        statusPurpose: 'revocation',
+        encodedList,
+      },
+    },
+    200,
+    { 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-store' },
+  );
+}
+
+async function ensureStatusIndex(env, user) {
+  if (user.status_index !== null && user.status_index !== undefined) return Number(user.status_index);
+  const maxUser = await db(env).prepare('SELECT COALESCE(MAX(status_index), -1) AS m FROM users').first();
+  const maxRev = await db(env).prepare('SELECT COALESCE(MAX(idx), -1) AS m FROM revoked_indices').first();
+  const nextIdx = Math.max(Number(maxUser?.m ?? -1), Number(maxRev?.m ?? -1)) + 1;
+  await db(env).prepare('UPDATE users SET status_index = ? WHERE id = ?').bind(nextIdx, user.id).run();
+  return nextIdx;
+}
+
+// Self-revocation: mark current status_index as revoked in /status/1 and rotate to a fresh index.
+async function revokeOwnCredential(request, env) {
+  const user = await currentUser(request, env);
+  if (!user) return json({ error: 'log in first' }, 401);
+  const oldIdx = await ensureStatusIndex(env, user);
+  const maxUser = await db(env).prepare('SELECT COALESCE(MAX(status_index), -1) AS m FROM users').first();
+  const maxRev = await db(env).prepare('SELECT COALESCE(MAX(idx), -1) AS m FROM revoked_indices').first();
+  const newIdx = Math.max(Number(maxUser?.m ?? -1), Number(maxRev?.m ?? -1), oldIdx) + 1;
+  await db(env).batch([
+    db(env).prepare('INSERT OR IGNORE INTO revoked_indices (idx, user_id, revoked_at) VALUES (?, ?, ?)').bind(oldIdx, user.id, Date.now()),
+    db(env).prepare('UPDATE users SET status_index = ? WHERE id = ?').bind(newIdx, user.id),
+  ]);
+  return json({ ok: true, revokedIndex: oldIdx, newStatusIndex: newIdx });
+}
+
+const sdHasher = async (data) => {
+  const bytes = typeof data === 'string' ? new TextEncoder().encode(data) : new Uint8Array(data);
+  return new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
+};
+
+const sdSaltGenerator = (length) => {
+  const bytes = new Uint8Array(length);
+  crypto.getRandomValues(bytes);
+  return uint8ArrayToBase64Url(bytes);
+};
+
 async function issueCredential(request, url, env) {
   const user = await currentUser(request, env);
   if (!user) return json({ error: 'log in first' }, 401);
   if (user.status !== 'approved') return json({ error: 'not approved yet' }, 403);
+  const reqBody = await request.json().catch(() => ({}));
+  const format = reqBody?.format === 'sd-jwt' ? 'sd-jwt' : 'vc+jwt';
+  const nonce = typeof reqBody?.nonce === 'string' && reqBody.nonce.length <= 256 ? reqBody.nonce : undefined;
+  const aud = typeof reqBody?.aud === 'string' && reqBody.aud.length <= 256 ? reqBody.aud : undefined;
+  const requestedDisclose = Array.isArray(reqBody?.disclose)
+    ? reqBody.disclose.filter((k) => ['name', 'orcid', 'memberOf', 'wallet'].includes(k))
+    : ['name', 'orcid', 'memberOf', 'wallet'];
+
   const did = didFor(url);
+  const statusIndex = await ensureStatusIndex(env, user);
   const { privateKey } = await issuerKey(url, env);
+  const ttlDays = Math.max(1, Number(env.VC_TTL_DAYS || VC_TTL_DAYS));
   const now = new Date();
-  const until = new Date(now.getTime() + VC_TTL_DAYS * 86400 * 1000);
+  const until = new Date(now.getTime() + ttlDays * 86400 * 1000);
   const credential = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', 'LdasMemberCredential'],
     issuer: did,
+    iss: did,
+    iat: Math.floor(now.getTime() / 1000),
+    exp: Math.floor(until.getTime() / 1000),
     validFrom: now.toISOString(),
     validUntil: until.toISOString(),
+    ...(nonce ? { nonce } : {}),
+    ...(aud ? { aud } : {}),
     credentialSubject: {
-      // With a wallet: the subject is the wallet (did:pkh = "DID of a blockchain account").
-      // Without: the subject is the ORCID iD, and the VC is just a bearer string.
       id: user.wallet ? `did:pkh:eip155:${env.WALLET_CHAIN_ID}:${user.wallet}` : `${ORCID}/${user.orcid}`,
       orcid: `${ORCID}/${user.orcid}`,
       name: user.name,
       memberOf: 'LDAS',
+      ...(user.wallet ? { wallet: user.wallet } : {}),
     },
-    // How the issuer convinced itself before signing. The value of a VC is in this step: say it honestly.
+    credentialStatus: {
+      id: `${url.origin}/status/1#${statusIndex}`,
+      type: 'BitstringStatusListEntry',
+      statusPurpose: 'revocation',
+      statusListIndex: String(statusIndex),
+      statusListCredential: `${url.origin}/status/1`,
+    },
     evidence: [{
       type: ['Evidence'],
       method: user.approved_by ? 'ORCID sign-in, approved by an administrator' : 'ORCID sign-in only (anyone with an ORCID iD)',
@@ -331,12 +447,38 @@ async function issueCredential(request, url, env) {
       checkedAt: new Date(user.approved_at || user.created_at).toISOString(),
     }],
   };
+
+  if (format === 'sd-jwt') {
+    const sdjwt = new SdJwtInstance({
+      signer: async (data) => {
+        const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(data));
+        return uint8ArrayToBase64Url(new Uint8Array(sig));
+      },
+      signAlg: 'EdDSA',
+      hasher: sdHasher,
+      hashAlg: 'sha-256',
+      saltGenerator: sdSaltGenerator,
+    });
+    const sdKeys = ['name', 'orcid', 'memberOf', ...(user.wallet ? ['wallet'] : [])];
+    const issued = await sdjwt.issue(
+      credential,
+      { credentialSubject: { _sd: sdKeys } },
+      { header: { typ: 'vc+sd-jwt', kid: `${did}#key-1` } },
+    );
+    const presentFrame = { credentialSubject: {} };
+    for (const k of sdKeys) {
+      if (requestedDisclose.includes(k)) presentFrame.credentialSubject[k] = true;
+    }
+    const presentation = await sdjwt.present(issued, presentFrame);
+    return json({ jwt: presentation, format: 'sd-jwt', disclosed: requestedDisclose, credential });
+  }
+
   const jwt = await new SignJWT(credential)
     .setProtectedHeader({ alg: 'EdDSA', typ: 'vc+jwt', kid: `${did}#key-1` })
     .setIssuedAt(Math.floor(now.getTime() / 1000))
     .setExpirationTime(Math.floor(until.getTime() / 1000))
     .sign(privateKey);
-  return json({ jwt, credential });
+  return json({ jwt, format: 'vc+jwt', credential });
 }
 
 // ---------------------------------------------------------------------------

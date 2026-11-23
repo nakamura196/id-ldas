@@ -18,7 +18,11 @@
     // Who may approve people (comma-separated ORCID iDs)
     "ADMIN_ORCIDS": "0000-0001-8245-7925",
     // Chain written into did:pkh subjects (Sepolia, where the Clio-X trial runs)
-    "WALLET_CHAIN_ID": "11155111"
+    "WALLET_CHAIN_ID": "11155111",
+    // Comma-separated origins allowed for ?return_to= / OID4VP redirect_uri
+    "ALLOWED_RETURN_ORIGINS": "https://*.ldas.jp,https://ldas.jp,http://localhost:*,http://127.0.0.1:*",
+    // Default validity period (days) for issued VCs / SD-JWTs
+    "VC_TTL_DAYS": "30"
   }
   // Secret ISSUER_JWK (Ed25519 private key, JWK JSON) is set with `wrangler secret put`, from 1Password.
 }

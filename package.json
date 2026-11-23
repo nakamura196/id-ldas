@@ -9,6 +9,7 @@
   "dependencies": {
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0",
+    "@sd-jwt/core": "0.25.0",
     "@simplewebauthn/server": "14.0.2",
     "jose": "6.2.12"
   },
