@@ -203,9 +203,9 @@ async function post(path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
   });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || r.statusText);
-  return data;
+  const doc = await r.json();
+  if (!r.ok) throw new Error(doc.errors?.[0]?.title || doc.error || r.statusText);
+  return doc.data?.attributes ?? doc;
 }
 
 function render() {
@@ -317,8 +317,9 @@ $('switchBtn').onclick = async () => {
 };
 
 (async () => {
-  const data = await (await fetch('/api/me')).json();
-  const patterns = data.allowedReturnOrigins || [];
+  const doc = await (await fetch('/api/me')).json();
+  const meUser = doc.data ? { id: doc.data.id, ...doc.data.attributes } : null;
+  const patterns = doc.meta?.allowedReturnOrigins || [];
   const params = new URLSearchParams(location.search);
   const responseType = params.get('response_type');
   oid4vpMode = responseType === 'vp_token';
@@ -338,13 +339,13 @@ $('switchBtn').onclick = async () => {
     return;
   }
 
-  if (!data.user) {
+  if (!meUser) {
     const next = `${location.pathname}${location.search}`;
     location.replace(`/login?next=${encodeURIComponent(next)}`);
     return;
   }
 
-  user = data.user;
+  user = meUser;
   render();
 })();
 </script>

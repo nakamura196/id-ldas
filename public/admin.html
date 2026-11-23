@@ -24,9 +24,15 @@ onLangChange(() => load());
 
 async function load() {
   const r = await fetch('/api/admin/users');
-  const data = await r.json();
-  if (!r.ok) { $('msg').textContent = data.error === 'admin only' ? t('admin.only') : data.error; $('msg').className = 'bad'; return; }
-  $('rows').replaceChildren(...data.users.map((u) => {
+  const doc = await r.json();
+  if (!r.ok) {
+    const errMsg = doc.errors?.[0]?.title || doc.error || r.statusText;
+    $('msg').textContent = errMsg === 'admin only' ? t('admin.only') : errMsg;
+    $('msg').className = 'bad';
+    return;
+  }
+  const users = (doc.data || []).map((item) => ({ id: item.id, ...item.attributes }));
+  $('rows').replaceChildren(...users.map((u) => {
     const tr = document.createElement('tr');
     const who = document.createElement('td');
     const a = Object.assign(document.createElement('a'), { href: `https://orcid.org/${u.orcid}`, target: '_blank', rel: 'noopener', textContent: u.orcid });

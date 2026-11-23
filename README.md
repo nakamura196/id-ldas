@@ -22,7 +22,7 @@ Live: https://id.ldas.jp
 | `/admin` | list people and stop/allow them (admins only, `ADMIN_ORCIDS`) |
 | `/.well-known/did.json` | the server's DID document (public key) |
 | `/auth/orcid`, `/auth/orcid/callback` | ORCID sign-in |
-| `/api/*` | JSON API used by the pages |
+| `/api/*` | App-specific JSON:API v1.1 (`application/vnd.api+json`, custom fields inside `data.attributes`) |
 
 ## What is stored where
 

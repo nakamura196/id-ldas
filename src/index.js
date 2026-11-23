@@ -49,6 +49,7 @@ export default {
       }
     } catch (e) {
       console.error(e);
+      if (url.pathname.startsWith('/api/')) return jsonApiError(e.message, e.status || 400);
       return json({ error: e.message }, e.status || 400);
     }
     return env.ASSETS.fetch(request);
@@ -73,7 +74,7 @@ async function api(request, url, env) {
     case 'GET /api/admin/users':       return adminUsers(request, env);
     case 'POST /api/admin/decide':     return adminDecide(request, env);
   }
-  return json({ error: 'not found' }, 404);
+  return jsonApiError('not found', 404);
 }
 
 // ---------------------------------------------------------------------------
@@ -130,7 +131,7 @@ async function issuerKey(url, env) {
 // Adding a passkey needs an existing (ORCID) sign-in: passkeys are a faster way back, not a way in.
 async function registerOptions(request, url, env) {
   const user = await currentUser(request, env);
-  if (!user) return json({ error: 'sign in with ORCID first' }, 401);
+  if (!user) return jsonApiError('sign in with ORCID first', 401);
   const options = await generateRegistrationOptions({
     rpName: RP_NAME,
     rpID: url.hostname,
@@ -157,7 +158,7 @@ async function registerVerify(request, url, env) {
   const now = Date.now();
   await db(env).prepare('INSERT INTO credentials (id, user_id, public_key, counter, transports, created_at) VALUES (?, ?, ?, ?, ?, ?)')
     .bind(cred.id, ch.user_id, isoBase64URL.fromBuffer(cred.publicKey), cred.counter, JSON.stringify(cred.transports ?? []), now).run();
-  return json({ ok: true });
+  return jsonApi({ type: 'passkey', id: cred.id, attributes: { ok: true } });
 }
 
 async function loginOptions(url, env) {
@@ -192,7 +193,10 @@ async function withChallenge(env, options, { userId = null, name = null }) {
   const id = crypto.randomUUID();
   await db(env).prepare('INSERT INTO challenges (id, challenge, user_id, name, expires_at) VALUES (?, ?, ?, ?, ?)')
     .bind(id, options.challenge, userId, name, Date.now() + CHALLENGE_TTL).run();
-  return json(options, 200, { 'Set-Cookie': cookie('ch', id, CHALLENGE_TTL) });
+  return jsonApi(
+    { type: 'webauthn-options', id, attributes: options },
+    { headers: { 'Set-Cookie': cookie('ch', id, CHALLENGE_TTL) } },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -287,7 +291,10 @@ async function newSession(env, userId) {
 }
 
 async function startSession(env, userId) {
-  return json({ ok: true }, 200, { 'Set-Cookie': await newSession(env, userId) });
+  return jsonApi(
+    { type: 'session', id: userId, attributes: { ok: true } },
+    { headers: { 'Set-Cookie': await newSession(env, userId) } },
+  );
 }
 
 async function currentUser(request, env) {
@@ -300,23 +307,43 @@ async function currentUser(request, env) {
 
 async function me(request, env) {
   const user = await currentUser(request, env);
-  if (user) user.isAdmin = isAdminOrcid(env, user.orcid);
   const allowedReturnOrigins = (env.ALLOWED_RETURN_ORIGINS || '')
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  return json({
-    user,
-    allowedReturnOrigins,
-    grdmEnabled: Boolean(env.GRDM_CLIENT_ID && env.GRDM_CLIENT_SECRET),
-    emailDeliveryConfigured: Boolean(env.RESEND_API_KEY),
+  const data = user
+    ? {
+        type: 'user',
+        id: user.id,
+        attributes: {
+          name: user.name,
+          orcid: user.orcid,
+          status: user.status,
+          wallet: user.wallet,
+          affiliation: user.affiliation,
+          email_domain: user.email_domain,
+          affiliation_method: user.affiliation_method,
+          affiliation_verified_at: user.affiliation_verified_at,
+          isAdmin: isAdminOrcid(env, user.orcid),
+        },
+      }
+    : null;
+  return jsonApi(data, {
+    meta: {
+      allowedReturnOrigins,
+      grdmEnabled: Boolean(env.GRDM_CLIENT_ID && env.GRDM_CLIENT_SECRET),
+      emailDeliveryConfigured: Boolean(env.RESEND_API_KEY),
+    },
   });
 }
 
 async function logout(request, env) {
   const sid = cookies(request).sid;
   if (sid) await db(env).prepare('DELETE FROM sessions WHERE id = ?').bind(sid).run();
-  return json({ ok: true }, 200, { 'Set-Cookie': cookie('sid', '', 0) });
+  return jsonApi(
+    { type: 'session', id: 'current', attributes: { ok: true } },
+    { headers: { 'Set-Cookie': cookie('sid', '', 0) } },
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -395,7 +422,7 @@ async function ensureStatusIndex(env, user) {
 // Self-revocation: mark current status_index as revoked in /status/1 and rotate to a fresh index.
 async function revokeOwnCredential(request, env) {
   const user = await currentUser(request, env);
-  if (!user) return json({ error: 'log in first' }, 401);
+  if (!user) return jsonApiError('log in first', 401);
   const oldIdx = await ensureStatusIndex(env, user);
   const maxUser = await db(env).prepare('SELECT COALESCE(MAX(status_index), -1) AS m FROM users').first();
   const maxRev = await db(env).prepare('SELECT COALESCE(MAX(idx), -1) AS m FROM revoked_indices').first();
@@ -404,7 +431,11 @@ async function revokeOwnCredential(request, env) {
     db(env).prepare('INSERT OR IGNORE INTO revoked_indices (idx, user_id, revoked_at) VALUES (?, ?, ?)').bind(oldIdx, user.id, Date.now()),
     db(env).prepare('UPDATE users SET status_index = ? WHERE id = ?').bind(newIdx, user.id),
   ]);
-  return json({ ok: true, revokedIndex: oldIdx, newStatusIndex: newIdx });
+  return jsonApi({
+    type: 'revocation',
+    id: String(oldIdx),
+    attributes: { ok: true, revokedIndex: oldIdx, newStatusIndex: newIdx },
+  });
 }
 
 const sdHasher = async (data) => {
@@ -420,8 +451,8 @@ const sdSaltGenerator = (length) => {
 
 async function issueCredential(request, url, env) {
   const user = await currentUser(request, env);
-  if (!user) return json({ error: 'log in first' }, 401);
-  if (user.status !== 'approved') return json({ error: 'not approved yet' }, 403);
+  if (!user) return jsonApiError('log in first', 401);
+  if (user.status !== 'approved') return jsonApiError('not approved yet', 403);
   const reqBody = await request.json().catch(() => ({}));
   const format = reqBody?.format === 'sd-jwt' || reqBody?.format === 'dc+sd-jwt' ? 'dc+sd-jwt' : 'vc+jwt';
   const nonce = typeof reqBody?.nonce === 'string' && reqBody.nonce.length <= 256 ? reqBody.nonce : undefined;
@@ -526,7 +557,11 @@ async function issueCredential(request, url, env) {
       if (requestedDisclose.includes(k)) presentFrame.credentialSubject[k] = true;
     }
     const presentation = await sdjwt.present(issued, presentFrame);
-    return json({ jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential });
+    return jsonApi({
+      type: 'credential',
+      id: String(statusIndex),
+      attributes: { jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential },
+    });
   }
 
   const jwt = await new SignJWT(credential)
@@ -534,7 +569,11 @@ async function issueCredential(request, url, env) {
     .setIssuedAt(Math.floor(now.getTime() / 1000))
     .setExpirationTime(Math.floor(until.getTime() / 1000))
     .sign(privateKey);
-  return json({ jwt, format: 'vc+jwt', credential });
+  return jsonApi({
+    type: 'credential',
+    id: String(statusIndex),
+    attributes: { jwt, format: 'vc+jwt', credential },
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -548,18 +587,21 @@ function walletMessage(url, user, nonce) {
 
 async function walletChallenge(request, url, env) {
   const user = await currentUser(request, env);
-  if (!user) return json({ error: 'log in first' }, 401);
+  if (!user) return jsonApiError('log in first', 401);
   const nonce = crypto.randomUUID();
   const message = walletMessage(url, user, nonce);
   const id = crypto.randomUUID();
   await db(env).prepare('INSERT INTO challenges (id, challenge, user_id, name, expires_at) VALUES (?, ?, ?, NULL, ?)')
     .bind(id, message, user.id, Date.now() + CHALLENGE_TTL).run();
-  return json({ message }, 200, { 'Set-Cookie': cookie('ch', id, CHALLENGE_TTL) });
+  return jsonApi(
+    { type: 'wallet-challenge', id, attributes: { message } },
+    { headers: { 'Set-Cookie': cookie('ch', id, CHALLENGE_TTL) } },
+  );
 }
 
 async function walletVerify(request, env) {
   const user = await currentUser(request, env);
-  if (!user) return json({ error: 'log in first' }, 401);
+  if (!user) return jsonApiError('log in first', 401);
   const ch = await takeChallenge(request, env);
   if (ch.user_id !== user.id) throw new Error('challenge belongs to another session');
   const { address, signature } = await request.json();
@@ -568,7 +610,7 @@ async function walletVerify(request, env) {
   const taken = await db(env).prepare('SELECT id FROM users WHERE wallet = ? AND id != ?').bind(signer, user.id).first();
   if (taken) throw new Error('this wallet is already linked to another account');
   await db(env).prepare('UPDATE users SET wallet = ? WHERE id = ?').bind(signer, user.id).run();
-  return json({ wallet: signer });
+  return jsonApi({ type: 'wallet', id: signer, attributes: { wallet: signer } });
 }
 
 // ---------------------------------------------------------------------------
@@ -633,7 +675,7 @@ function parseInstitutionalEmail(rawEmail) {
 
 async function emailChallenge(request, url, env) {
   const user = await currentUser(request, env);
-  if (!user) return json({ error: 'log in first' }, 401);
+  if (!user) return jsonApiError('log in first', 401);
 
   const body = await request.json().catch(() => ({}));
   const { normalizedEmail, emailDomain, affiliation } = parseInstitutionalEmail(body?.email);
@@ -644,7 +686,7 @@ async function emailChallenge(request, url, env) {
     .bind(user.id)
     .first();
   if (recent && now - Number(recent.created_at) < EMAIL_COOLDOWN_MS) {
-    return json({ error: '確認コードの再送信は 60 秒お待ちください' }, 429);
+    return jsonApiError('確認コードの再送信は 60 秒お待ちください', 429);
   }
 
   const rand = new Uint32Array(1);
@@ -681,26 +723,34 @@ async function emailChallenge(request, url, env) {
       const detail = await sendRes.text().catch(() => '');
       throw Object.assign(new Error(`確認メールの送信に失敗しました (${sendRes.status}): ${detail.slice(0, 120)}`), { status: 502 });
     }
-    return json({ ok: true, challengeId: id, emailDomain, affiliation, delivery: 'resend' });
+    return jsonApi({
+      type: 'email-challenge',
+      id,
+      attributes: { challengeId: id, emailDomain, affiliation, delivery: 'resend' },
+    });
   }
 
   if (isLocal) {
     console.log(`[id-ldas local dev] Email verification code for ${emailDomain} (${affiliation}): ${code}`);
-    return json({ ok: true, challengeId: id, emailDomain, affiliation, delivery: 'local-dev', devCode: code });
+    return jsonApi({
+      type: 'email-challenge',
+      id,
+      attributes: { challengeId: id, emailDomain, affiliation, delivery: 'local-dev', devCode: code },
+    });
   }
 
-  return json({ error: 'メール送信機能（RESEND_API_KEY）がまだ設定されていません' }, 503);
+  return jsonApiError('メール送信機能（RESEND_API_KEY）がまだ設定されていません', 503);
 }
 
 async function emailVerify(request, env) {
   const user = await currentUser(request, env);
-  if (!user) return json({ error: 'log in first' }, 401);
+  if (!user) return jsonApiError('log in first', 401);
 
   const body = await request.json().catch(() => ({}));
   const challengeId = typeof body?.challengeId === 'string' ? body.challengeId.trim() : '';
   const code = typeof body?.code === 'string' ? body.code.trim() : '';
   if (!challengeId || !/^\d{6}$/.test(code)) {
-    return json({ error: '6 桁の確認コードを入力してください' }, 400);
+    return jsonApiError('6 桁の確認コードを入力してください', 400);
   }
 
   const row = await db(env)
@@ -709,7 +759,7 @@ async function emailVerify(request, env) {
     .first();
   if (!row || Number(row.expires_at) < Date.now()) {
     if (row) await db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id).run();
-    return json({ error: '確認コードの有効期限が切れています。最初からやり直してください' }, 400);
+    return jsonApiError('確認コードの有効期限が切れています。最初からやり直してください', 400);
   }
 
   const expectedHash = await sha256Hex(`${row.id}:${code}`);
@@ -717,10 +767,10 @@ async function emailVerify(request, env) {
     const nextAttempts = Number(row.attempts) + 1;
     if (nextAttempts >= EMAIL_MAX_ATTEMPTS) {
       await db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id).run();
-      return json({ error: '試行回数の上限に達しました。確認コードを再発行してください' }, 429);
+      return jsonApiError('試行回数の上限に達しました。確認コードを再発行してください', 429);
     }
     await db(env).prepare('UPDATE email_verifications SET attempts = ? WHERE id = ?').bind(nextAttempts, row.id).run();
-    return json({ error: `確認コードが一致しません（残り ${EMAIL_MAX_ATTEMPTS - nextAttempts} 回）` }, 400);
+    return jsonApiError(`確認コードが一致しません（残り ${EMAIL_MAX_ATTEMPTS - nextAttempts} 回）`, 400);
   }
 
   const now = Date.now();
@@ -731,11 +781,10 @@ async function emailVerify(request, env) {
       .bind(row.domain, row.affiliation, 'email-code', now, user.id),
   ]);
 
-  return json({
-    ok: true,
-    emailDomain: row.domain,
-    affiliation: row.affiliation,
-    method: 'email-code',
+  return jsonApi({
+    type: 'affiliation',
+    id: user.id,
+    attributes: { emailDomain: row.domain, affiliation: row.affiliation, method: 'email-code' },
   });
 }
 
@@ -827,9 +876,26 @@ async function requireAdmin(request, env) {
 async function adminUsers(request, env) {
   await requireAdmin(request, env);
   const users = await db(env).prepare(
-    "SELECT id, name, orcid, wallet, status, approved_by, approved_at, created_at FROM users WHERE orcid IS NOT NULL ORDER BY status = 'pending' DESC, created_at DESC"
+    "SELECT id, name, orcid, wallet, status, affiliation, email_domain, approved_by, approved_at, created_at FROM users WHERE orcid IS NOT NULL ORDER BY status = 'pending' DESC, created_at DESC"
   ).all();
-  return json({ users });
+  return jsonApi(
+    users.map((u) => ({
+      type: 'user',
+      id: u.id,
+      attributes: {
+        name: u.name,
+        orcid: u.orcid,
+        wallet: u.wallet,
+        status: u.status,
+        affiliation: u.affiliation,
+        email_domain: u.email_domain,
+        approved_by: u.approved_by,
+        approved_at: u.approved_at,
+        created_at: u.created_at,
+      },
+    })),
+    { meta: { count: users.length } },
+  );
 }
 
 async function adminDecide(request, env) {
@@ -838,9 +904,14 @@ async function adminDecide(request, env) {
   if (!['approved', 'rejected', 'pending'].includes(status)) throw new Error('bad status');
   await db(env).prepare('UPDATE users SET status = ?, approved_by = ?, approved_at = ? WHERE id = ?')
     .bind(status, admin.orcid, Date.now(), id).run();
-  return json({ ok: true });
+  return jsonApi({ type: 'user', id, attributes: { status } });
 }
 
+// ---------------------------------------------------------------------------
+// Response helpers:
+//   - Standard endpoints (/.well-known/did.json) use json()
+//   - App-specific /api/* endpoints use JSON:API v1.1 (jsonApi / jsonApiError)
+//     so custom fields are clearly separated inside `data.attributes`.
 // ---------------------------------------------------------------------------
 
 function json(body, status = 200, headers = {}) {
@@ -848,6 +919,28 @@ function json(body, status = 200, headers = {}) {
     status,
     headers: { 'Content-Type': 'application/json', ...headers },
   });
+}
+
+function jsonApi(data, { status = 200, headers = {}, meta } = {}) {
+  const body = {
+    jsonapi: { version: '1.1' },
+    data,
+    ...(meta ? { meta } : {}),
+  };
+  return new Response(JSON.stringify(body, null, 2), {
+    status,
+    headers: { 'Content-Type': 'application/vnd.api+json', ...headers },
+  });
+}
+
+function jsonApiError(title, status = 400, headers = {}) {
+  return new Response(
+    JSON.stringify({ jsonapi: { version: '1.1' }, errors: [{ status: String(status), title }] }, null, 2),
+    {
+      status,
+      headers: { 'Content-Type': 'application/vnd.api+json', ...headers },
+    },
+  );
 }
 
 function cookie(name, value, ttlMs) {

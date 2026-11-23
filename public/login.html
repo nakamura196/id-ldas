@@ -59,9 +59,9 @@ async function post(path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body ?? {}),
   });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || r.statusText);
-  return data;
+  const doc = await r.json();
+  if (!r.ok) throw new Error(doc.errors?.[0]?.title || doc.error || r.statusText);
+  return doc.data?.attributes ?? doc;
 }
 
 $('passkeyBtn').onclick = async () => {
@@ -76,8 +76,8 @@ $('passkeyBtn').onclick = async () => {
 };
 
 (async () => {
-  const { user } = await (await fetch('/api/me')).json();
-  if (user) location.replace(nextPath);
+  const doc = await (await fetch('/api/me')).json();
+  if (doc.data) location.replace(nextPath);
 })();
 </script>
 </body>

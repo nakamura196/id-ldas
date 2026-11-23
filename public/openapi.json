@@ -1,0 +1,268 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "LDAS ID (id.ldas.jp) API",
+    "version": "1.1.0",
+    "description": "Standard W3C/IETF/OID4VP endpoints (/.well-known/did.json, /status/1) and app-specific JSON:API v1.1 endpoints (/api/*) where custom fields live inside `data.attributes`."
+  },
+  "servers": [
+    { "url": "https://id.ldas.jp", "description": "Production" },
+    { "url": "http://localhost:8787", "description": "Local wrangler dev" }
+  ],
+  "tags": [
+    { "name": "Standard (W3C / IETF)", "description": "Public standard endpoints consumed by external verifiers" },
+    { "name": "App API (JSON:API v1.1)", "description": "Application-specific endpoints using application/vnd.api+json" }
+  ],
+  "paths": {
+    "/.well-known/did.json": {
+      "get": {
+        "tags": ["Standard (W3C / IETF)"],
+        "summary": "W3C DID Document (did:web:id.ldas.jp)",
+        "responses": {
+          "200": {
+            "description": "W3C DID Document containing Ed25519 assertionMethod public key JWK",
+            "content": { "application/json": { "schema": { "type": "object" } } }
+          }
+        }
+      }
+    },
+    "/status/1": {
+      "get": {
+        "tags": ["Standard (W3C / IETF)"],
+        "summary": "W3C Bitstring Status List v1.0 (signed vc+jwt)",
+        "responses": {
+          "200": {
+            "description": "Ed25519-signed BitstringStatusListCredential JWT",
+            "content": { "application/vc+jwt": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/api/me": {
+      "get": {
+        "tags": ["App API (JSON:API v1.1)"],
+        "summary": "Get current authenticated user and server feature flags",
+        "responses": {
+          "200": {
+            "description": "Current user resource (or null if signed out) with meta flags",
+            "content": {
+              "application/vnd.api+json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["jsonapi", "data", "meta"],
+                  "properties": {
+                    "jsonapi": { "$ref": "#/components/schemas/JsonApiVersion" },
+                    "data": { "oneOf": [{ "$ref": "#/components/schemas/UserResource" }, { "type": "null" }] },
+                    "meta": {
+                      "type": "object",
+                      "required": ["allowedReturnOrigins", "grdmEnabled", "emailDeliveryConfigured"],
+                      "properties": {
+                        "allowedReturnOrigins": { "type": "array", "items": { "type": "string" } },
+                        "grdmEnabled": { "type": "boolean" },
+                        "emailDeliveryConfigured": { "type": "boolean" }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/credential": {
+      "post": {
+        "tags": ["App API (JSON:API v1.1)"],
+        "summary": "Issue vc+jwt or dc+sd-jwt credential (with optional cnf.jwk for kb+jwt)",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "format": { "type": "string", "enum": ["vc+jwt", "dc+sd-jwt"] },
+                  "disclose": {
+                    "type": "array",
+                    "items": { "type": "string", "enum": ["name", "orcid", "memberOf", "wallet", "affiliation", "emailDomain"] }
+                  },
+                  "cnfJwk": { "type": "object", "description": "Holder public JWK bound for RFC 9901 kb+jwt" },
+                  "nonce": { "type": "string" },
+                  "aud": { "type": "string" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Issued credential resource",
+            "content": {
+              "application/vnd.api+json": {
+                "schema": {
+                  "type": "object",
+                  "required": ["jsonapi", "data"],
+                  "properties": {
+                    "jsonapi": { "$ref": "#/components/schemas/JsonApiVersion" },
+                    "data": { "$ref": "#/components/schemas/CredentialResource" }
+                  }
+                }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/JsonApiError" },
+          "403": { "$ref": "#/components/responses/JsonApiError" }
+        }
+      }
+    },
+    "/api/credential/revoke": {
+      "post": {
+        "tags": ["App API (JSON:API v1.1)"],
+        "summary": "Self-revoke all previously issued VCs in /status/1",
+        "responses": {
+          "200": {
+            "description": "Revocation result",
+            "content": { "application/vnd.api+json": { "schema": { "type": "object" } } }
+          },
+          "401": { "$ref": "#/components/responses/JsonApiError" }
+        }
+      }
+    },
+    "/api/email/challenge": {
+      "post": {
+        "tags": ["App API (JSON:API v1.1)"],
+        "summary": "Send 6-digit verification code to institutional email (raw email is never stored)",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["email"],
+                "properties": {
+                  "email": { "type": "string", "format": "email", "example": "researcher@mail.u-tokyo.ac.jp" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Challenge created", "content": { "application/vnd.api+json": { "schema": { "type": "object" } } } },
+          "401": { "$ref": "#/components/responses/JsonApiError" },
+          "429": { "$ref": "#/components/responses/JsonApiError" }
+        }
+      }
+    },
+    "/api/email/verify": {
+      "post": {
+        "tags": ["App API (JSON:API v1.1)"],
+        "summary": "Verify 6-digit code and save verified emailDomain & affiliation",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": ["challengeId", "code"],
+                "properties": {
+                  "challengeId": { "type": "string" },
+                  "code": { "type": "string", "pattern": "^[0-9]{6}$" }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": { "description": "Affiliation verified", "content": { "application/vnd.api+json": { "schema": { "type": "object" } } } },
+          "400": { "$ref": "#/components/responses/JsonApiError" },
+          "401": { "$ref": "#/components/responses/JsonApiError" }
+        }
+      }
+    },
+    "/api/logout": {
+      "post": {
+        "tags": ["App API (JSON:API v1.1)"],
+        "summary": "Clear session cookie",
+        "responses": {
+          "200": { "description": "Logged out", "content": { "application/vnd.api+json": { "schema": { "type": "object" } } } }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "JsonApiVersion": {
+        "type": "object",
+        "required": ["version"],
+        "properties": { "version": { "type": "string", "const": "1.1" } }
+      },
+      "UserResource": {
+        "type": "object",
+        "required": ["type", "id", "attributes"],
+        "properties": {
+          "type": { "type": "string", "const": "user" },
+          "id": { "type": "string" },
+          "attributes": {
+            "type": "object",
+            "required": ["name", "status", "isAdmin"],
+            "properties": {
+              "name": { "type": "string" },
+              "orcid": { "type": ["string", "null"] },
+              "status": { "type": "string", "enum": ["pending", "approved", "rejected"] },
+              "wallet": { "type": ["string", "null"] },
+              "affiliation": { "type": ["string", "null"] },
+              "email_domain": { "type": ["string", "null"] },
+              "affiliation_method": { "type": ["string", "null"], "enum": ["email-code", "grdm-oauth", null] },
+              "affiliation_verified_at": { "type": ["integer", "null"] },
+              "isAdmin": { "type": "boolean" }
+            }
+          }
+        }
+      },
+      "CredentialResource": {
+        "type": "object",
+        "required": ["type", "id", "attributes"],
+        "properties": {
+          "type": { "type": "string", "const": "credential" },
+          "id": { "type": "string" },
+          "attributes": {
+            "type": "object",
+            "required": ["jwt", "format", "credential"],
+            "properties": {
+              "jwt": { "type": "string" },
+              "format": { "type": "string", "enum": ["vc+jwt", "dc+sd-jwt"] },
+              "disclosed": { "type": "array", "items": { "type": "string" } },
+              "credential": { "type": "object" }
+            }
+          }
+        }
+      }
+    },
+    "responses": {
+      "JsonApiError": {
+        "description": "JSON:API v1.1 Error Object",
+        "content": {
+          "application/vnd.api+json": {
+            "schema": {
+              "type": "object",
+              "required": ["jsonapi", "errors"],
+              "properties": {
+                "jsonapi": { "$ref": "#/components/schemas/JsonApiVersion" },
+                "errors": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "required": ["status", "title"],
+                    "properties": {
+                      "status": { "type": "string" },
+                      "title": { "type": "string" }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

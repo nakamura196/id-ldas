@@ -84,9 +84,9 @@ let emailChallengeId = '';
 
 async function post(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
-  const data = await r.json();
-  if (!r.ok) throw new Error(data.error || r.statusText);
-  return data;
+  const doc = await r.json();
+  if (!r.ok) throw new Error(doc.errors?.[0]?.title || doc.error || r.statusText);
+  return doc.data?.attributes ?? doc;
 }
 
 function render() {
@@ -109,9 +109,9 @@ function render() {
 onLangChange(render);
 
 async function refresh() {
-  const data = await (await fetch('/api/me')).json();
-  user = data.user;
-  grdmEnabled = !!data.grdmEnabled;
+  const doc = await (await fetch('/api/me')).json();
+  user = doc.data ? { id: doc.data.id, ...doc.data.attributes } : null;
+  grdmEnabled = !!doc.meta?.grdmEnabled;
   render();
 }
 

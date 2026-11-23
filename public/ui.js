@@ -295,9 +295,10 @@ document.body.prepend(el('header', { className: 'site' },
 
 const about = el('p'); about.dataset.i18n = 'footer.about';
 const did = el('a', { href: '/.well-known/did.json' }); did.dataset.i18n = 'footer.did';
+const apiDocs = el('a', { href: '/docs', textContent: 'API Docs (OpenAPI)' });
 const by = el('span'); by.dataset.i18n = 'footer.by';
 document.body.append(el('footer', { className: 'site' },
-  el('div', { className: 'inner' }, about, el('p', {}, did, ' · ', by))));
+  el('div', { className: 'inner' }, about, el('p', {}, did, ' · ', apiDocs, ' · ', by))));
 
 setTheme();
 apply();
