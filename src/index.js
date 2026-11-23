@@ -803,11 +803,43 @@ async function grdmStart(request, url, env) {
   auth.search = new URLSearchParams({
     client_id: env.GRDM_CLIENT_ID,
     response_type: 'code',
-    scope: 'osf.users.profile_read osf.users.email_read',
+    scope: 'osf.full_read',
     redirect_uri: `${url.origin}/auth/grdm/callback`,
     state,
   });
   return new Response(null, { status: 302, headers: { Location: auth.toString(), 'Set-Cookie': cookie('ch', state, CHALLENGE_TTL) } });
+}
+
+const FREE_WEBMAIL_DOMAINS = new Set([
+  'gmail.com', 'googlemail.com', 'yahoo.co.jp', 'yahoo.com',
+  'icloud.com', 'me.com', 'outlook.com', 'hotmail.com', 'live.com', 'proton.me', 'protonmail.com',
+]);
+
+function normalizeGrdmInstitution(inst) {
+  if (!inst || !inst.attributes) return null;
+  const rawName = String(inst.attributes.name || '').trim();
+  const id = String(inst.id || '').toLowerCase();
+  const domainList = Array.isArray(inst.attributes.email_domains) ? inst.attributes.email_domains : [];
+  let domain = typeof domainList[0] === 'string' && domainList[0].trim() ? domainList[0].trim().toLowerCase() : null;
+
+  if (!domain && typeof inst.attributes.auth_url === 'string') {
+    const m = /([a-z0-9-]+\.ac\.jp|[a-z0-9-]+\.edu|[a-z0-9-]+\.ubc\.ca)/i.exec(inst.attributes.auth_url);
+    if (m) domain = m[1].toLowerCase();
+  }
+  if (/東京大学|university of tokyo|utokyo/i.test(rawName) || id.includes('utokyo') || id.includes('u-tokyo')) {
+    return { affiliation: 'The University of Tokyo', emailDomain: domain || 'u-tokyo.ac.jp' };
+  }
+  if (/京都大学|kyoto university/i.test(rawName) || id.includes('kyoto')) {
+    return { affiliation: 'Kyoto University', emailDomain: domain || 'kyoto-u.ac.jp' };
+  }
+  if (/国立情報学研究所|national institute of informatics/i.test(rawName) || id === 'nii') {
+    return { affiliation: 'National Institute of Informatics', emailDomain: domain || 'nii.ac.jp' };
+  }
+  if (domain) {
+    const resolved = resolveDomainAffiliation(domain);
+    return { affiliation: rawName || resolved.affiliation, emailDomain: resolved.emailDomain };
+  }
+  return rawName ? { affiliation: rawName, emailDomain: null } : null;
 }
 
 async function grdmCallback(request, url, env) {
@@ -833,24 +865,31 @@ async function grdmCallback(request, url, env) {
     throw new Error(`GakuNin RDM token exchange failed: ${tokens.error_description || tokenRes.status}`);
   }
 
-  // Fetch user profile & institutions using the short-lived access token, then discard the token (never persisted).
+  // Fetch user profile & affiliated institutions using the short-lived access token, then discard the token (never persisted).
   const authHeaders = { Authorization: `Bearer ${tokens.access_token}`, Accept: 'application/json' };
-  const meRes = await fetch(`${GRDM_API}/users/me/`, { headers: authHeaders });
+  const meRes = await fetch(`${GRDM_API}/users/me/?embed=institutions`, { headers: authHeaders });
   const meJson = await meRes.json().catch(() => ({}));
   if (!meRes.ok) throw new Error(`GakuNin RDM profile fetch failed (${meRes.status})`);
 
-  const instRes = await fetch(`${GRDM_API}/users/me/institutions/`, { headers: authHeaders }).catch(() => null);
-  const instJson = instRes && instRes.ok ? await instRes.json().catch(() => ({})) : {};
-  const instName = instJson?.data?.[0]?.attributes?.name || null;
+  let instList = meJson?.data?.embeds?.institutions?.data;
+  if (!Array.isArray(instList) || instList.length === 0) {
+    const instRes = await fetch(`${GRDM_API}/users/me/institutions/`, { headers: authHeaders }).catch(() => null);
+    const instJson = instRes && instRes.ok ? await instRes.json().catch(() => ({})) : {};
+    instList = Array.isArray(instJson?.data) ? instJson.data : [];
+  }
+
+  const instInfo = normalizeGrdmInstitution(instList[0]);
+  let affiliation = instInfo?.affiliation || null;
+  let emailDomain = instInfo?.emailDomain || null;
 
   const grdmEmail = meJson?.data?.attributes?.email;
-  let emailDomain = null;
-  let affiliation = instName;
   if (typeof grdmEmail === 'string' && grdmEmail.includes('@')) {
     const parsed = parseInstitutionalEmail(grdmEmail);
-    emailDomain = parsed.emailDomain;
-    if (!affiliation) affiliation = parsed.affiliation;
+    const isFreeWebmail = FREE_WEBMAIL_DOMAINS.has(parsed.emailDomain);
+    if (!emailDomain && !isFreeWebmail) emailDomain = parsed.emailDomain;
+    if (!affiliation && !isFreeWebmail) affiliation = parsed.affiliation;
   }
+
   if (!affiliation && !emailDomain) {
     return Response.redirect(`${url.origin}/?grdm=no_affiliation`, 302);
   }
