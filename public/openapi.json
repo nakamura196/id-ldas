@@ -74,6 +74,7 @@
       "post": {
         "tags": ["App API (JSON:API v1.1)"],
         "summary": "Issue vc+jwt or dc+sd-jwt credential (with optional cnf.jwk for kb+jwt)",
+        "security": [{ "sessionCookie": [] }],
         "requestBody": {
           "content": {
             "application/json": {
@@ -118,6 +119,7 @@
       "post": {
         "tags": ["App API (JSON:API v1.1)"],
         "summary": "Self-revoke all previously issued VCs in /status/1",
+        "security": [{ "sessionCookie": [] }],
         "responses": {
           "200": {
             "description": "Revocation result",
@@ -131,6 +133,7 @@
       "post": {
         "tags": ["App API (JSON:API v1.1)"],
         "summary": "Send 6-digit verification code to institutional email (raw email is never stored)",
+        "security": [{ "sessionCookie": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -156,6 +159,7 @@
       "post": {
         "tags": ["App API (JSON:API v1.1)"],
         "summary": "Verify 6-digit code and save verified emailDomain & affiliation",
+        "security": [{ "sessionCookie": [] }],
         "requestBody": {
           "required": true,
           "content": {
@@ -189,6 +193,14 @@
     }
   },
   "components": {
+    "securitySchemes": {
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "sid",
+        "description": "HttpOnly session cookie issued after signing in at /login. Sign in via the top bar button to execute authenticated endpoints."
+      }
+    },
     "schemas": {
       "JsonApiVersion": {
         "type": "object",
