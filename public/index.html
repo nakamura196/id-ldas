@@ -216,7 +216,7 @@ function render() {
     $('affilVerifiedMeta').textContent = t('home.affilVerifiedMeta', methodLabel, verifiedDate);
   }
   $('grdmLink').hidden = !grdmEnabled;
-  $('issue').hidden = user.status !== 'approved';
+  $('issue').hidden = user.status !== 'approved' && user.status !== 'verified';
   $('walletRow').hidden = !user.wallet;
   $('wallet').textContent = user.wallet || t('home.none');
   $('linkWallet').textContent = t(user.wallet ? 'home.relink' : 'home.link');

@@ -72,7 +72,7 @@ async function api(request, url, env) {
     case 'POST /api/email/challenge':      return emailChallenge(request, url, env);
     case 'POST /api/email/verify':         return emailVerify(request, env);
     case 'POST /api/auth/email/start':     return emailLoginStart(request, url, env);
-    case 'POST /api/auth/email/verify':    return emailLoginVerify(request, url, env);
+    case 'POST /api/auth/email/verify':    return emailLoginVerify(request, env);
     case 'GET /api/admin/users':           return adminUsers(request, env);
     case 'POST /api/admin/decide':     return adminDecide(request, env);
   }
