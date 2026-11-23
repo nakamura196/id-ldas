@@ -16,7 +16,9 @@ const SCHEMA = `
     email_domain TEXT,                    -- verified institutional/org domain (raw email is NEVER stored)
     affiliation  TEXT,                    -- verified organization name derived from domain or GakuNin RDM
     affiliation_method TEXT,              -- email-code | grdm-oauth
-    affiliation_verified_at INTEGER       -- unix ms when affiliation was last verified
+    affiliation_verified_at INTEGER,      -- unix ms when affiliation was last verified
+    email_login_hash TEXT,                -- HMAC-SHA256 of normalized email (raw email is NEVER stored)
+    grdm_id     TEXT                      -- GakuNin RDM public user id (no tokens or raw email stored)
   );
   
   CREATE TABLE IF NOT EXISTS credentials (
@@ -62,6 +64,19 @@ const SCHEMA = `
     expires_at  INTEGER NOT NULL,
     created_at  INTEGER NOT NULL
   );
+
+  -- Short-lived email login/signup challenges (raw email and raw code are NEVER stored).
+  CREATE TABLE IF NOT EXISTS email_login_challenges (
+    id              TEXT PRIMARY KEY,
+    email_hash      TEXT NOT NULL,
+    domain          TEXT NOT NULL,
+    affiliation     TEXT NOT NULL,
+    is_free_webmail INTEGER NOT NULL DEFAULT 0,
+    code_hash       TEXT NOT NULL,
+    attempts        INTEGER NOT NULL DEFAULT 0,
+    expires_at      INTEGER NOT NULL,
+    created_at      INTEGER NOT NULL
+  );
 `;
 
 // Columns added after the first deploy (2026-10-02). Old databases get them here.
@@ -76,6 +91,8 @@ const MIGRATIONS = [
   "ALTER TABLE users ADD COLUMN affiliation TEXT",
   "ALTER TABLE users ADD COLUMN affiliation_method TEXT",
   "ALTER TABLE users ADD COLUMN affiliation_verified_at INTEGER",
+  "ALTER TABLE users ADD COLUMN email_login_hash TEXT",
+  "ALTER TABLE users ADD COLUMN grdm_id TEXT",
 ];
 
 export class Store extends DurableObject {
@@ -87,6 +104,8 @@ export class Store extends DurableObject {
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_orcid ON users(orcid)');
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_wallet ON users(wallet)');
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_status_index ON users(status_index)');
+    ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_email_login_hash ON users(email_login_hash)');
+    ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_grdm_id ON users(grdm_id)');
     // Backfill status_index for existing users created before Bitstring Status List support.
     const maxRow = ctx.storage.sql.exec('SELECT COALESCE(MAX(status_index), -1) AS m FROM users').toArray()[0];
     let nextIdx = Number(maxRow?.m ?? -1) + 1;

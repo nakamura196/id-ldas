@@ -229,6 +229,9 @@ function render() {
     ['emailDomain', 'chkEmailDomain', 'reqEmailDomain', 'rowEmailDomain'],
     ['wallet', 'chkWallet', 'reqWallet', 'rowWallet'],
   ];
+  const isLdasMember = user.status === 'approved';
+  const canIssue = user.status === 'approved' || user.status === 'verified';
+
   for (const [key, chkId, reqId, rowId] of map) {
     const isReq = requiredClaims.has(key);
     const badge = $(reqId);
@@ -237,6 +240,8 @@ function render() {
     $(rowId).classList.toggle('is-required', isReq);
 
     const missing =
+      (key === 'orcid' && !user.orcid) ||
+      (key === 'memberOf' && !isLdasMember) ||
       (key === 'wallet' && !user.wallet) ||
       (key === 'affiliation' && !user.affiliation) ||
       (key === 'emailDomain' && !user.email_domain);
@@ -252,10 +257,9 @@ function render() {
     }
   }
 
-  const approved = user.status === 'approved';
-  $('approveBtn').hidden = !approved;
-  $('notApproved').hidden = approved;
-  if (!approved) $('notApproved').textContent = t(`status.${user.status}`);
+  $('approveBtn').hidden = !canIssue;
+  $('notApproved').hidden = canIssue;
+  if (!canIssue) $('notApproved').textContent = t(`status.${user.status}`);
 }
 onLangChange(render);
 

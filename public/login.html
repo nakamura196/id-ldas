@@ -20,8 +20,26 @@
       <p id="nextNoticeText" style="margin:0;"></p>
     </section>
 
-    <section id="authCard">
+    <section id="authCard" style="display:flex; flex-direction:column; gap:10px;">
       <a id="orcidBtn" class="button orcid full" href="/auth/orcid" data-i18n="home.orcid"></a>
+      <a id="grdmBtn" class="button secondary full" href="/auth/grdm" hidden>GakuNin RDM でログイン（大学所属者）</a>
+
+      <div class="divider"><span>メールアドレス（確認コード）でログイン・登録</span></div>
+      <div id="emailStep1" style="display:flex; flex-direction:column; gap:8px;">
+        <input id="emailInput" type="email" placeholder="メールアドレス（例：name@u-tokyo.ac.jp）" autocomplete="email" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px;">
+        <input id="nameInput" type="text" placeholder="表示名（初回登録時・任意）" autocomplete="name" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px;">
+        <button id="sendCodeBtn" type="button" class="secondary full">6 桁の確認コードを送信</button>
+        <p style="margin:0; font-size:11.5px; color:var(--muted); line-height:1.5;">
+          ※ 生メールアドレスは DB や証明書（VC）に一切保存しません（秘密鍵付きハッシュ値のみで本人を識別します）。大学・機関ドメインの場合は所属証明も同時に完了します。
+        </p>
+      </div>
+
+      <div id="emailStep2" hidden style="display:flex; flex-direction:column; gap:8px;">
+        <input id="codeInput" type="text" inputmode="numeric" maxlength="6" placeholder="届いた 6 桁の確認コード" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:16px; letter-spacing:0.2em; text-align:center;">
+        <button id="verifyCodeBtn" type="button" class="full">確認してログイン</button>
+        <button id="backEmailBtn" type="button" class="secondary small">メールアドレスを入力し直す</button>
+      </div>
+
       <div class="divider"><span data-i18n="home.returning"></span></div>
       <button id="passkeyBtn" class="secondary full" data-i18n="home.passkeyLogin"></button>
     </section>
@@ -44,6 +62,9 @@ function safeNextPath(raw) {
 
 const nextPath = safeNextPath(new URLSearchParams(location.search).get('next'));
 $('orcidBtn').href = `/auth/orcid?next=${encodeURIComponent(nextPath)}`;
+$('grdmBtn').href = `/auth/grdm?next=${encodeURIComponent(nextPath)}`;
+
+let emailChallengeId = null;
 
 function renderNotice() {
   if (nextPath !== '/') {
@@ -65,6 +86,50 @@ async function post(path, body) {
   return doc.data?.attributes ?? doc;
 }
 
+$('sendCodeBtn').onclick = async () => {
+  const email = $('emailInput').value.trim();
+  if (!email) return msg('メールアドレスを入力してください', true);
+  $('sendCodeBtn').disabled = true;
+  msg('確認コードを送信中...');
+  try {
+    const res = await post('/api/auth/email/start', { email });
+    emailChallengeId = res.challengeId;
+    $('emailStep1').hidden = true;
+    $('emailStep2').hidden = false;
+    msg(res.devCode ? `ローカル開発用コード: ${res.devCode}` : '確認コードを送信しました（有効期限 10 分）。メールをご確認ください。');
+  } catch (err) {
+    msg(err.message, true);
+  } finally {
+    $('sendCodeBtn').disabled = false;
+  }
+};
+
+$('verifyCodeBtn').onclick = async () => {
+  const code = $('codeInput').value.trim();
+  if (!emailChallengeId || !/^\d{6}$/.test(code)) return msg('6 桁の確認コードを入力してください', true);
+  $('verifyCodeBtn').disabled = true;
+  msg('確認中...');
+  try {
+    await post('/api/auth/email/verify', {
+      challengeId: emailChallengeId,
+      code,
+      name: $('nameInput').value.trim() || undefined,
+    });
+    location.href = nextPath;
+  } catch (err) {
+    msg(err.message, true);
+  } finally {
+    $('verifyCodeBtn').disabled = false;
+  }
+};
+
+$('backEmailBtn').onclick = () => {
+  emailChallengeId = null;
+  $('emailStep2').hidden = true;
+  $('emailStep1').hidden = false;
+  msg('');
+};
+
 $('passkeyBtn').onclick = async () => {
   try {
     const optionsJSON = await post('/api/login/options');
@@ -78,7 +143,13 @@ $('passkeyBtn').onclick = async () => {
 
 (async () => {
   const doc = await (await fetch('/api/me')).json();
-  if (doc.data) location.replace(nextPath);
+  if (doc.data) {
+    location.replace(nextPath);
+    return;
+  }
+  if (doc.meta?.grdmEnabled) {
+    $('grdmBtn').hidden = false;
+  }
 })();
 </script>
 </body>

@@ -69,9 +69,11 @@ async function api(request, url, env) {
     case 'POST /api/credential/revoke': return revokeOwnCredential(request, env);
     case 'POST /api/wallet/challenge': return walletChallenge(request, url, env);
     case 'POST /api/wallet/verify':    return walletVerify(request, env);
-    case 'POST /api/email/challenge':  return emailChallenge(request, url, env);
-    case 'POST /api/email/verify':     return emailVerify(request, env);
-    case 'GET /api/admin/users':       return adminUsers(request, env);
+    case 'POST /api/email/challenge':      return emailChallenge(request, url, env);
+    case 'POST /api/email/verify':         return emailVerify(request, env);
+    case 'POST /api/auth/email/start':     return emailLoginStart(request, url, env);
+    case 'POST /api/auth/email/verify':    return emailLoginVerify(request, url, env);
+    case 'GET /api/admin/users':           return adminUsers(request, env);
     case 'POST /api/admin/decide':     return adminDecide(request, env);
   }
   return jsonApiError('not found', 404);
@@ -206,7 +208,7 @@ async function withChallenge(env, options, { userId = null, name = null }) {
 
 function safeNextPath(raw) {
   if (!raw || typeof raw !== 'string') return '/';
-  if (!raw.startsWith('/') || raw.startsWith('//')) return '/';
+  if (!raw.startsWith('/') || raw.startsWith('//') || raw.includes('\\')) return '/';
   return raw;
 }
 
@@ -452,7 +454,10 @@ const sdSaltGenerator = (length) => {
 async function issueCredential(request, url, env) {
   const user = await currentUser(request, env);
   if (!user) return jsonApiError('log in first', 401);
-  if (user.status !== 'approved') return jsonApiError('not approved yet', 403);
+  if (user.status !== 'approved' && user.status !== 'verified') {
+    return jsonApiError('not approved yet', 403);
+  }
+  const isLdasMember = user.status === 'approved';
   const reqBody = await request.json().catch(() => ({}));
   const format = reqBody?.format === 'sd-jwt' || reqBody?.format === 'dc+sd-jwt' ? 'dc+sd-jwt' : 'vc+jwt';
   const nonce = typeof reqBody?.nonce === 'string' && reqBody.nonce.length <= 256 ? reqBody.nonce : undefined;
@@ -496,10 +501,14 @@ async function issueCredential(request, url, env) {
     ...(!cnfJwk && nonce ? { nonce } : {}),
     ...(!cnfJwk && aud ? { aud } : {}),
     credentialSubject: {
-      id: user.wallet ? `did:pkh:eip155:${env.WALLET_CHAIN_ID}:${user.wallet}` : `${ORCID}/${user.orcid}`,
-      orcid: `${ORCID}/${user.orcid}`,
+      id: user.wallet
+        ? `did:pkh:eip155:${env.WALLET_CHAIN_ID}:${user.wallet}`
+        : user.orcid
+          ? `${ORCID}/${user.orcid}`
+          : `urn:ldas:user:${user.id}`,
+      ...(user.orcid ? { orcid: `${ORCID}/${user.orcid}` } : {}),
       name: user.name,
-      memberOf: 'LDAS',
+      ...(isLdasMember ? { memberOf: 'LDAS' } : {}),
       ...(user.wallet ? { wallet: user.wallet } : {}),
       ...(user.affiliation ? { affiliation: user.affiliation } : {}),
       ...(user.email_domain ? { emailDomain: user.email_domain } : {}),
@@ -541,8 +550,8 @@ async function issueCredential(request, url, env) {
     });
     const sdKeys = [
       'name',
-      'orcid',
-      'memberOf',
+      ...(user.orcid ? ['orcid'] : []),
+      ...(isLdasMember ? ['memberOf'] : []),
       ...(user.wallet ? ['wallet'] : []),
       ...(user.affiliation ? ['affiliation'] : []),
       ...(user.email_domain ? ['emailDomain'] : []),
@@ -788,16 +797,174 @@ async function emailVerify(request, env) {
   });
 }
 
+async function hmacEmailHash(normalizedEmail, env) {
+  const pepper = env.ISSUER_JWK || 'ldas-id-local-dev-pepper-not-for-prod';
+  const key = await crypto.subtle.importKey(
+    'raw',
+    new TextEncoder().encode(pepper),
+    { name: 'HMAC', hash: 'SHA-256' },
+    false,
+    ['sign'],
+  );
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(normalizedEmail));
+  return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+async function emailLoginStart(request, url, env) {
+  const body = await request.json().catch(() => ({}));
+  const { normalizedEmail, emailDomain, affiliation } = parseInstitutionalEmail(body?.email);
+  const isFreeWebmail = FREE_WEBMAIL_DOMAINS.has(emailDomain) ? 1 : 0;
+  const emailHash = await hmacEmailHash(normalizedEmail, env);
+  const now = Date.now();
+
+  const recent = await db(env)
+    .prepare('SELECT created_at FROM email_login_challenges WHERE email_hash = ? ORDER BY created_at DESC LIMIT 1')
+    .bind(emailHash)
+    .first();
+  if (recent && now - Number(recent.created_at) < EMAIL_COOLDOWN_MS) {
+    return jsonApiError('確認コードの再送信は 60 秒お待ちください', 429);
+  }
+
+  const rand = new Uint32Array(1);
+  crypto.getRandomValues(rand);
+  const code = String(rand[0] % 1000000).padStart(6, '0');
+  const id = crypto.randomUUID();
+  const codeHash = await sha256Hex(`${id}:${code}`);
+
+  await db(env).batch([
+    db(env).prepare('DELETE FROM email_login_challenges WHERE email_hash = ? OR expires_at < ?').bind(emailHash, now),
+    db(env)
+      .prepare('INSERT INTO email_login_challenges (id, email_hash, domain, affiliation, is_free_webmail, code_hash, attempts, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
+      .bind(id, emailHash, emailDomain, affiliation, isFreeWebmail, codeHash, now + EMAIL_CODE_TTL, now),
+  ]);
+
+  const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (env.RESEND_API_KEY) {
+    const from = env.MAIL_FROM || 'LDAS ID <noreply@ldas.jp>';
+    const sendRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [normalizedEmail],
+        subject: `[LDAS ID] ログイン確認コード: ${code}`,
+        text: `LDAS ID のログイン確認コードは ${code} です（有効期限 10 分・最大 5 回まで入力可能）。\n\n※メールアドレス本体はデータベースおよび証明書（VC）には一切保存されません（不可逆な HMAC ハッシュ値のみで本人を識別します）。`,
+      }),
+    });
+    if (!sendRes.ok) {
+      const detail = await sendRes.text().catch(() => '');
+      throw Object.assign(new Error(`確認メールの送信に失敗しました (${sendRes.status}): ${detail.slice(0, 120)}`), { status: 502 });
+    }
+    return jsonApi({
+      type: 'email-login-challenge',
+      id,
+      attributes: { challengeId: id, emailDomain: isFreeWebmail ? null : emailDomain, delivery: 'resend' },
+    });
+  }
+
+  if (isLocal) {
+    return jsonApi({
+      type: 'email-login-challenge',
+      id,
+      attributes: { challengeId: id, emailDomain: isFreeWebmail ? null : emailDomain, delivery: 'local-dev', devCode: code },
+    });
+  }
+  return jsonApiError('メール送信機能（RESEND_API_KEY）がまだ設定されていません', 503);
+}
+
+async function emailLoginVerify(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const challengeId = typeof body?.challengeId === 'string' ? body.challengeId.trim() : '';
+  const code = typeof body?.code === 'string' ? body.code.trim() : '';
+  const displayName = typeof body?.name === 'string' ? body.name.trim().slice(0, 80) : '';
+  if (!challengeId || !/^\d{6}$/.test(code)) {
+    return jsonApiError('6 桁の確認コードを入力してください', 400);
+  }
+
+  const row = await db(env)
+    .prepare('SELECT * FROM email_login_challenges WHERE id = ?')
+    .bind(challengeId)
+    .first();
+  if (!row) return jsonApiError('確認コードが見つかりません。もう一度送信してください', 400);
+
+  const now = Date.now();
+  if (Number(row.expires_at) < now) {
+    await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ?').bind(challengeId).run();
+    return jsonApiError('確認コードの有効期限（10分）が切れました。再送信してください', 400);
+  }
+  if (Number(row.attempts) >= EMAIL_MAX_ATTEMPTS) {
+    await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ?').bind(challengeId).run();
+    return jsonApiError('試行回数の上限に達しました。確認コードを再送信してください', 429);
+  }
+
+  const expectedHash = await sha256Hex(`${challengeId}:${code}`);
+  if (!constantTimeEqual(expectedHash, String(row.code_hash))) {
+    await db(env).prepare('UPDATE email_login_challenges SET attempts = attempts + 1 WHERE id = ?').bind(challengeId).run();
+    return jsonApiError('確認コードが一致しません', 400);
+  }
+
+  await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ?').bind(challengeId).run();
+
+  const emailDomain = Number(row.is_free_webmail) ? null : String(row.domain);
+  const affiliation = Number(row.is_free_webmail) ? null : String(row.affiliation);
+  let user = await db(env).prepare('SELECT * FROM users WHERE email_login_hash = ?').bind(row.email_hash).first();
+
+  if (!user) {
+    const newId = crypto.randomUUID();
+    const finalName = displayName || (affiliation ? `${affiliation} User` : 'LDAS User');
+    await db(env)
+      .prepare(
+        "INSERT INTO users (id, name, created_at, status, email_login_hash, email_domain, affiliation, affiliation_method, affiliation_verified_at) VALUES (?, ?, ?, 'verified', ?, ?, ?, ?, ?)",
+      )
+      .bind(
+        newId,
+        finalName,
+        now,
+        row.email_hash,
+        emailDomain,
+        affiliation,
+        emailDomain ? 'email-code' : null,
+        emailDomain ? now : null,
+      )
+      .run();
+    user = { id: newId, name: finalName, status: 'verified' };
+  } else {
+    const nextName = displayName || user.name;
+    await db(env)
+      .prepare(
+        'UPDATE users SET name = ?, email_domain = COALESCE(?, email_domain), affiliation = COALESCE(?, affiliation), affiliation_method = COALESCE(?, affiliation_method), affiliation_verified_at = COALESCE(?, affiliation_verified_at) WHERE id = ?',
+      )
+      .bind(
+        nextName,
+        emailDomain,
+        affiliation,
+        emailDomain ? 'email-code' : null,
+        emailDomain ? now : null,
+        user.id,
+      )
+      .run();
+  }
+
+  return jsonApi(
+    { type: 'session', id: user.id, attributes: { ok: true, userId: user.id, status: user.status } },
+    { headers: { 'Set-Cookie': await newSession(env, user.id) } },
+  );
+}
+
 async function grdmStart(request, url, env) {
   const user = await currentUser(request, env);
-  if (!user) return Response.redirect(`${url.origin}/login?next=${encodeURIComponent('/auth/grdm')}`, 302);
   if (!env.GRDM_CLIENT_ID || !env.GRDM_CLIENT_SECRET) {
-    return Response.redirect(`${url.origin}/?grdm=unconfigured`, 302);
+    return Response.redirect(`${url.origin}/${user ? '' : 'login'}?grdm=unconfigured`, 302);
   }
   const state = crypto.randomUUID();
+  const nextPath = safeNextPath(url.searchParams.get('next'));
+  const mode = user ? 'grdm-link' : 'grdm-login';
   await db(env)
     .prepare('INSERT INTO challenges (id, challenge, user_id, name, expires_at) VALUES (?, ?, ?, ?, ?)')
-    .bind(state, 'grdm-link', user.id, '/', Date.now() + CHALLENGE_TTL)
+    .bind(state, mode, user ? user.id : null, nextPath, Date.now() + CHALLENGE_TTL)
     .run();
   const auth = new URL(`${GRDM_ACCOUNTS}/oauth2/authorize`);
   auth.search = new URLSearchParams({
@@ -846,8 +1013,10 @@ async function grdmCallback(request, url, env) {
   const state = url.searchParams.get('state');
   if (!state || state !== cookies(request).ch) throw new Error('state mismatch; start again');
   const ch = await takeChallenge(request, env);
-  if (url.searchParams.get('error')) return Response.redirect(`${url.origin}/?grdm=cancelled`, 302);
-  if (!ch.user_id) throw new Error('missing user session for GakuNin RDM link');
+  const isLoginMode = ch.challenge === 'grdm-login' || !ch.user_id;
+  if (url.searchParams.get('error')) {
+    return Response.redirect(`${url.origin}/${isLoginMode ? 'login' : ''}?grdm=cancelled`, 302);
+  }
 
   const tokenRes = await fetch(`${GRDM_ACCOUNTS}/oauth2/token`, {
     method: 'POST',
@@ -888,6 +1057,35 @@ async function grdmCallback(request, url, env) {
     const isFreeWebmail = FREE_WEBMAIL_DOMAINS.has(parsed.emailDomain);
     if (!emailDomain && !isFreeWebmail) emailDomain = parsed.emailDomain;
     if (!affiliation && !isFreeWebmail) affiliation = parsed.affiliation;
+  }
+
+  if (isLoginMode) {
+    const grdmId = String(meJson?.data?.id || '').trim();
+    if (!grdmId) throw new Error('GakuNin RDM user ID missing');
+    const grdmName = String(meJson?.data?.attributes?.full_name || '').trim() || `GakuNin RDM (${grdmId})`;
+    const now = Date.now();
+    let user = await db(env).prepare('SELECT id FROM users WHERE grdm_id = ?').bind(grdmId).first();
+    if (!user) {
+      const newId = crypto.randomUUID();
+      await db(env)
+        .prepare(
+          "INSERT INTO users (id, name, created_at, status, grdm_id, email_domain, affiliation, affiliation_method, affiliation_verified_at) VALUES (?, ?, ?, 'verified', ?, ?, ?, ?, ?)",
+        )
+        .bind(newId, grdmName, now, grdmId, emailDomain, affiliation, affiliation || emailDomain ? 'grdm-oauth' : null, affiliation || emailDomain ? now : null)
+        .run();
+      user = { id: newId };
+    } else {
+      await db(env)
+        .prepare(
+          'UPDATE users SET name = ?, email_domain = COALESCE(?, email_domain), affiliation = COALESCE(?, affiliation), affiliation_method = COALESCE(?, affiliation_method), affiliation_verified_at = COALESCE(?, affiliation_verified_at) WHERE id = ?',
+        )
+        .bind(grdmName, emailDomain, affiliation, affiliation || emailDomain ? 'grdm-oauth' : null, affiliation || emailDomain ? now : null, user.id)
+        .run();
+    }
+    return new Response(null, {
+      status: 302,
+      headers: { Location: safeNextPath(ch.name), 'Set-Cookie': await newSession(env, user.id) },
+    });
   }
 
   if (!affiliation && !emailDomain) {
