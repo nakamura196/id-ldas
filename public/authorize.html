@@ -10,7 +10,7 @@
 <main class="auth-page">
   <div class="card">
     <div class="card-header">
-      <div class="card-badge">LDAS ID · UTokyo</div>
+      <div class="card-badge">LDAS ID</div>
       <h1 data-i18n="authz.title"></h1>
       <p class="lead" data-i18n="authz.lead"></p>
     </div>
@@ -53,6 +53,24 @@
             <span class="claim-value">LDAS</span>
           </span>
           <span class="pill pill-opt" id="reqMember"></span>
+        </label>
+
+        <label class="claim-row" id="rowAffiliation">
+          <input type="checkbox" id="chkAffiliation" checked>
+          <span class="claim-body">
+            <span class="claim-label" data-i18n="authz.claimAffiliation"></span>
+            <span class="claim-value" id="cAffiliation"></span>
+          </span>
+          <span class="pill pill-opt" id="reqAffiliation"></span>
+        </label>
+
+        <label class="claim-row" id="rowEmailDomain">
+          <input type="checkbox" id="chkEmailDomain" checked>
+          <span class="claim-body">
+            <span class="claim-label" data-i18n="authz.claimEmailDomain"></span>
+            <span class="claim-value" id="cEmailDomain"></span>
+          </span>
+          <span class="pill pill-opt" id="reqEmailDomain"></span>
         </label>
 
         <label class="claim-row" id="rowWallet">
@@ -110,7 +128,7 @@ function parseRequiredClaimsFromDcql(raw) {
       for (const claim of cred.claims || []) {
         const path = Array.isArray(claim.path) ? claim.path : [];
         const key = path[path.length - 1];
-        if (['name', 'orcid', 'memberOf', 'wallet'].includes(key)) req.add(key);
+        if (['name', 'orcid', 'memberOf', 'wallet', 'affiliation', 'emailDomain'].includes(key)) req.add(key);
       }
     }
   } catch {}
@@ -164,12 +182,16 @@ function render() {
   $('nonceInfo').textContent = reqNonce ? `nonce: ${reqNonce}` : '';
   $('cName').textContent = user.name || '';
   $('cOrcid').textContent = user.orcid || '';
+  $('cAffiliation').textContent = user.affiliation || t('home.none');
+  $('cEmailDomain').textContent = user.email_domain || t('home.none');
   $('cWallet').textContent = user.wallet || t('home.none');
 
   const map = [
     ['name', 'chkName', 'reqName', 'rowName'],
     ['orcid', 'chkOrcid', 'reqOrcid', 'rowOrcid'],
     ['memberOf', 'chkMember', 'reqMember', 'rowMember'],
+    ['affiliation', 'chkAffiliation', 'reqAffiliation', 'rowAffiliation'],
+    ['emailDomain', 'chkEmailDomain', 'reqEmailDomain', 'rowEmailDomain'],
     ['wallet', 'chkWallet', 'reqWallet', 'rowWallet'],
   ];
   for (const [key, chkId, reqId, rowId] of map) {
@@ -179,7 +201,12 @@ function render() {
     badge.className = isReq ? 'pill pill-req' : 'pill pill-opt';
     $(rowId).classList.toggle('is-required', isReq);
 
-    if (key === 'wallet' && !user.wallet) {
+    const missing =
+      (key === 'wallet' && !user.wallet) ||
+      (key === 'affiliation' && !user.affiliation) ||
+      (key === 'emailDomain' && !user.email_domain);
+
+    if (missing) {
       $(chkId).checked = false;
       $(chkId).disabled = true;
     } else if (isReq) {
@@ -204,6 +231,8 @@ $('approveBtn').onclick = async () => {
     if ($('chkName').checked) disclose.push('name');
     if ($('chkOrcid').checked) disclose.push('orcid');
     if ($('chkMember').checked) disclose.push('memberOf');
+    if ($('chkAffiliation').checked && user.affiliation) disclose.push('affiliation');
+    if ($('chkEmailDomain').checked && user.email_domain) disclose.push('emailDomain');
     if ($('chkWallet').checked && user.wallet) disclose.push('wallet');
 
     const res = await post('/api/credential', {

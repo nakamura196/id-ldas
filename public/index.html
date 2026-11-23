@@ -21,7 +21,24 @@
     <h2><span id="who"></span></h2>
     <p>ORCID iD: <a id="orcid" target="_blank" rel="noopener"></a></p>
     <p id="status"></p>
+    <p><span data-i18n="home.affiliation"></span>: <strong id="affiliation"></strong> <span id="emailDomain" style="color:var(--muted); font-size:0.9em;"></span></p>
     <p><span data-i18n="home.wallet"></span>: <span id="wallet"></span></p>
+
+    <div class="note" style="margin-bottom:16px;">
+      <strong data-i18n="home.affilTitle"></strong>
+      <p style="margin:6px 0 10px; font-size:0.92em;" data-i18n="home.affilDesc"></p>
+      <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;">
+        <input id="emailInput" type="email" style="flex:1; min-width:220px;" data-i18n-placeholder="home.emailPlaceholder">
+        <button id="sendEmailCode" type="button" class="secondary small" data-i18n="home.sendCode"></button>
+        <a id="grdmLink" class="button secondary small" href="/auth/grdm" hidden data-i18n="home.grdmLink"></a>
+      </div>
+      <div id="emailVerifyBox" hidden style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
+        <input id="codeInput" type="text" inputmode="numeric" maxlength="6" style="width:140px;" data-i18n-placeholder="home.codePlaceholder">
+        <button id="verifyEmailCode" type="button" class="small" data-i18n="home.verifyCode"></button>
+        <span id="devCodeHint" style="font-size:0.85em; color:var(--muted);"></span>
+      </div>
+    </div>
+
     <div class="note">
       <strong data-i18n="home.noteTitle"></strong>
       <ul>
@@ -62,6 +79,8 @@ const $ = (id) => document.getElementById(id);
 const msg = (text, bad) => { $('msg').textContent = text; $('msg').className = bad ? 'bad' : ''; };
 let user = null;
 let jwt = '';
+let grdmEnabled = false;
+let emailChallengeId = '';
 
 async function post(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
@@ -79,6 +98,9 @@ function render() {
   $('orcid').textContent = user.orcid || '';
   if (user.orcid) $('orcid').href = `https://orcid.org/${user.orcid}`;
   $('status').textContent = t(`status.${user.status}`);
+  $('affiliation').textContent = user.affiliation || t('home.none');
+  $('emailDomain').textContent = user.email_domain ? `(${user.email_domain})` : '';
+  $('grdmLink').hidden = !grdmEnabled;
   $('issue').hidden = user.status !== 'approved';
   $('wallet').textContent = user.wallet || t('home.none');
   $('linkWallet').textContent = t(user.wallet ? 'home.relink' : 'home.link');
@@ -87,9 +109,39 @@ function render() {
 onLangChange(render);
 
 async function refresh() {
-  ({ user } = await (await fetch('/api/me')).json());
+  const data = await (await fetch('/api/me')).json();
+  user = data.user;
+  grdmEnabled = !!data.grdmEnabled;
   render();
 }
+
+$('sendEmailCode').onclick = async () => {
+  try {
+    const email = $('emailInput').value.trim();
+    if (!email) throw new Error(t('home.emailPlaceholder'));
+    const res = await post('/api/email/challenge', { email });
+    emailChallengeId = res.challengeId;
+    $('emailVerifyBox').hidden = false;
+    $('devCodeHint').textContent = res.devCode ? `[localhost dev code: ${res.devCode}]` : '';
+    msg(t('msg.codeSent', res.emailDomain, res.affiliation));
+  } catch (err) { msg(err.message, true); }
+};
+
+$('verifyEmailCode').onclick = async () => {
+  try {
+    const code = $('codeInput').value.trim();
+    const res = await post('/api/email/verify', { challengeId: emailChallengeId, code });
+    $('emailVerifyBox').hidden = true;
+    $('emailInput').value = '';
+    $('codeInput').value = '';
+    $('devCodeHint').textContent = '';
+    emailChallengeId = '';
+    $('vc').hidden = true;
+    jwt = '';
+    msg(t('msg.affilVerified', res.affiliation, res.emailDomain));
+    refresh();
+  } catch (err) { msg(err.message, true); }
+};
 
 $('addPasskey').onclick = async () => {
   try {
@@ -138,7 +190,11 @@ $('issue').onclick = async () => {
   } catch (err) { msg(err.message, true); }
 };
 
-if (new URLSearchParams(location.search).get('orcid') === 'cancelled') msg(t('msg.orcidCancelled'), true);
+const q = new URLSearchParams(location.search);
+if (q.get('orcid') === 'cancelled') msg(t('msg.orcidCancelled'), true);
+if (q.get('grdm') === 'linked') msg(t('msg.grdmLinked'));
+if (q.get('grdm') === 'cancelled') msg(t('msg.grdmCancelled'), true);
+if (q.get('grdm') === 'unconfigured') msg(t('msg.grdmUnconfigured'), true);
 refresh();
 </script>
 </body>

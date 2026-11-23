@@ -12,7 +12,11 @@ const SCHEMA = `
     approved_by TEXT,                     -- ORCID iD of the admin who decided
     approved_at INTEGER,
     wallet      TEXT,                     -- Ethereum address the person proved they control
-    status_index INTEGER                  -- bit position in W3C Bitstring Status List (/status/1)
+    status_index INTEGER,                 -- bit position in W3C Bitstring Status List (/status/1)
+    email_domain TEXT,                    -- verified institutional/org domain (raw email is NEVER stored)
+    affiliation  TEXT,                    -- verified organization name derived from domain or GakuNin RDM
+    affiliation_method TEXT,              -- email-code | grdm-oauth
+    affiliation_verified_at INTEGER       -- unix ms when affiliation was last verified
   );
   
   CREATE TABLE IF NOT EXISTS credentials (
@@ -45,6 +49,19 @@ const SCHEMA = `
     user_id    TEXT NOT NULL REFERENCES users(id),
     revoked_at INTEGER NOT NULL
   );
+
+  -- Short-lived email verification challenges (raw email and raw code are NEVER stored).
+  CREATE TABLE IF NOT EXISTS email_verifications (
+    id          TEXT PRIMARY KEY,
+    user_id     TEXT NOT NULL REFERENCES users(id),
+    email_hash  TEXT NOT NULL,
+    domain      TEXT NOT NULL,
+    affiliation TEXT NOT NULL,
+    code_hash   TEXT NOT NULL,
+    attempts    INTEGER NOT NULL DEFAULT 0,
+    expires_at  INTEGER NOT NULL,
+    created_at  INTEGER NOT NULL
+  );
 `;
 
 // Columns added after the first deploy (2026-10-02). Old databases get them here.
@@ -55,6 +72,10 @@ const MIGRATIONS = [
   "ALTER TABLE users ADD COLUMN approved_at INTEGER",
   "ALTER TABLE users ADD COLUMN wallet TEXT",
   "ALTER TABLE users ADD COLUMN status_index INTEGER",
+  "ALTER TABLE users ADD COLUMN email_domain TEXT",
+  "ALTER TABLE users ADD COLUMN affiliation TEXT",
+  "ALTER TABLE users ADD COLUMN affiliation_method TEXT",
+  "ALTER TABLE users ADD COLUMN affiliation_verified_at INTEGER",
 ];
 
 export class Store extends DurableObject {

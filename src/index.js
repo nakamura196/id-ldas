@@ -39,6 +39,8 @@ export default {
       if (url.pathname === '/status/1') return await statusListCredential(url, env);
       if (url.pathname === '/auth/orcid') return await orcidStart(url, env);
       if (url.pathname === '/auth/orcid/callback') return await orcidCallback(request, url, env);
+      if (url.pathname === '/auth/grdm') return await grdmStart(request, url, env);
+      if (url.pathname === '/auth/grdm/callback') return await grdmCallback(request, url, env);
       if (url.pathname.startsWith('/api/')) return await api(request, url, env);
       // The admin page itself is only served to admins (its data API checks again).
       if (url.pathname === '/admin' || url.pathname === '/admin.html') {
@@ -66,6 +68,8 @@ async function api(request, url, env) {
     case 'POST /api/credential/revoke': return revokeOwnCredential(request, env);
     case 'POST /api/wallet/challenge': return walletChallenge(request, url, env);
     case 'POST /api/wallet/verify':    return walletVerify(request, env);
+    case 'POST /api/email/challenge':  return emailChallenge(request, url, env);
+    case 'POST /api/email/verify':     return emailVerify(request, env);
     case 'GET /api/admin/users':       return adminUsers(request, env);
     case 'POST /api/admin/decide':     return adminDecide(request, env);
   }
@@ -301,7 +305,12 @@ async function me(request, env) {
     .split(',')
     .map((s) => s.trim())
     .filter(Boolean);
-  return json({ user, allowedReturnOrigins });
+  return json({
+    user,
+    allowedReturnOrigins,
+    grdmEnabled: Boolean(env.GRDM_CLIENT_ID && env.GRDM_CLIENT_SECRET),
+    emailDeliveryConfigured: Boolean(env.RESEND_API_KEY),
+  });
 }
 
 async function logout(request, env) {
@@ -404,9 +413,10 @@ async function issueCredential(request, url, env) {
   const format = reqBody?.format === 'sd-jwt' ? 'sd-jwt' : 'vc+jwt';
   const nonce = typeof reqBody?.nonce === 'string' && reqBody.nonce.length <= 256 ? reqBody.nonce : undefined;
   const aud = typeof reqBody?.aud === 'string' && reqBody.aud.length <= 256 ? reqBody.aud : undefined;
+  const ALL_SD_KEYS = ['name', 'orcid', 'memberOf', 'wallet', 'affiliation', 'emailDomain'];
   const requestedDisclose = Array.isArray(reqBody?.disclose)
-    ? reqBody.disclose.filter((k) => ['name', 'orcid', 'memberOf', 'wallet'].includes(k))
-    : ['name', 'orcid', 'memberOf', 'wallet'];
+    ? reqBody.disclose.filter((k) => ALL_SD_KEYS.includes(k))
+    : ALL_SD_KEYS;
 
   const did = didFor(url);
   const statusIndex = await ensureStatusIndex(env, user);
@@ -431,6 +441,8 @@ async function issueCredential(request, url, env) {
       name: user.name,
       memberOf: 'LDAS',
       ...(user.wallet ? { wallet: user.wallet } : {}),
+      ...(user.affiliation ? { affiliation: user.affiliation } : {}),
+      ...(user.email_domain ? { emailDomain: user.email_domain } : {}),
     },
     credentialStatus: {
       id: `${url.origin}/status/1#${statusIndex}`,
@@ -444,6 +456,14 @@ async function issueCredential(request, url, env) {
       method: user.approved_by ? 'ORCID sign-in, approved by an administrator' : 'ORCID sign-in only (anyone with an ORCID iD)',
       ...(user.approved_by && { approvedBy: `${ORCID}/${user.approved_by}` }),
       ...(user.wallet && { wallet: 'holder signed a one-time message with this wallet (EIP-191)' }),
+      ...(user.email_domain && {
+        affiliationVerification: user.affiliation_method === 'grdm-oauth'
+          ? 'GakuNin RDM (OAuth2) institutional profile'
+          : 'Institutional email domain verified by one-time code (raw email not stored)',
+        affiliationVerifiedAt: user.affiliation_verified_at
+          ? new Date(user.affiliation_verified_at).toISOString()
+          : undefined,
+      }),
       checkedAt: new Date(user.approved_at || user.created_at).toISOString(),
     }],
   };
@@ -459,7 +479,14 @@ async function issueCredential(request, url, env) {
       hashAlg: 'sha-256',
       saltGenerator: sdSaltGenerator,
     });
-    const sdKeys = ['name', 'orcid', 'memberOf', ...(user.wallet ? ['wallet'] : [])];
+    const sdKeys = [
+      'name',
+      'orcid',
+      'memberOf',
+      ...(user.wallet ? ['wallet'] : []),
+      ...(user.affiliation ? ['affiliation'] : []),
+      ...(user.email_domain ? ['emailDomain'] : []),
+    ];
     const issued = await sdjwt.issue(
       credential,
       { credentialSubject: { _sd: sdKeys } },
@@ -513,6 +540,249 @@ async function walletVerify(request, env) {
   if (taken) throw new Error('this wallet is already linked to another account');
   await db(env).prepare('UPDATE users SET wallet = ? WHERE id = ?').bind(signer, user.id).run();
   return json({ wallet: signer });
+}
+
+// ---------------------------------------------------------------------------
+// Institutional Affiliation Verification:
+//   (1) Email domain verification via 6-digit one-time code (raw email NEVER stored)
+//   (2) GakuNin RDM (NII) OAuth2 profile/institution link (access token NEVER stored)
+// ---------------------------------------------------------------------------
+
+const EMAIL_CODE_TTL = 10 * 60 * 1000;
+const EMAIL_COOLDOWN_MS = 60 * 1000;
+const EMAIL_MAX_ATTEMPTS = 5;
+const GRDM_ACCOUNTS = 'https://accounts.rdm.nii.ac.jp';
+const GRDM_API = 'https://api.rdm.nii.ac.jp/v2';
+
+const KNOWN_INSTITUTIONS = [
+  { root: 'u-tokyo.ac.jp', affiliation: 'The University of Tokyo' },
+  { root: 'ubc.ca', affiliation: 'The University of British Columbia' },
+  { root: 'kyoto-u.ac.jp', affiliation: 'Kyoto University' },
+  { root: 'osaka-u.ac.jp', affiliation: 'Osaka University' },
+  { root: 'tohoku.ac.jp', affiliation: 'Tohoku University' },
+  { root: 'nii.ac.jp', affiliation: 'National Institute of Informatics' },
+  { root: 'keio.jp', affiliation: 'Keio University' },
+  { root: 'waseda.jp', affiliation: 'Waseda University' },
+];
+
+async function sha256Hex(text) {
+  const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function constantTimeEqual(a, b) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+function resolveDomainAffiliation(rawDomain) {
+  const d = rawDomain.trim().toLowerCase();
+  for (const entry of KNOWN_INSTITUTIONS) {
+    if (d === entry.root || d.endsWith(`.${entry.root}`)) {
+      return { emailDomain: entry.root, affiliation: entry.affiliation };
+    }
+  }
+  const labels = d.split('.');
+  if (d.endsWith('.ac.jp') && labels.length >= 3) {
+    const canonical = labels.slice(-3).join('.');
+    return { emailDomain: canonical, affiliation: canonical };
+  }
+  return { emailDomain: d, affiliation: d };
+}
+
+function parseInstitutionalEmail(rawEmail) {
+  if (typeof rawEmail !== 'string') throw new Error('メールアドレスを入力してください');
+  const normalized = rawEmail.trim().toLowerCase();
+  if (normalized.length > 254) throw new Error('メールアドレスが長すぎます');
+  const m = /^[^\s@]+@([a-z0-9-]+(?:\.[a-z0-9-]+)+)$/.exec(normalized);
+  if (!m) throw new Error('有効なメールアドレス形式で入力してください');
+  const { emailDomain, affiliation } = resolveDomainAffiliation(m[1]);
+  return { normalizedEmail: normalized, emailDomain, affiliation };
+}
+
+async function emailChallenge(request, url, env) {
+  const user = await currentUser(request, env);
+  if (!user) return json({ error: 'log in first' }, 401);
+
+  const body = await request.json().catch(() => ({}));
+  const { normalizedEmail, emailDomain, affiliation } = parseInstitutionalEmail(body?.email);
+
+  const now = Date.now();
+  const recent = await db(env)
+    .prepare('SELECT created_at FROM email_verifications WHERE user_id = ? ORDER BY created_at DESC LIMIT 1')
+    .bind(user.id)
+    .first();
+  if (recent && now - Number(recent.created_at) < EMAIL_COOLDOWN_MS) {
+    return json({ error: '確認コードの再送信は 60 秒お待ちください' }, 429);
+  }
+
+  const rand = new Uint32Array(1);
+  crypto.getRandomValues(rand);
+  const code = String(rand[0] % 1000000).padStart(6, '0');
+  const id = crypto.randomUUID();
+  const emailHash = await sha256Hex(normalizedEmail);
+  const codeHash = await sha256Hex(`${id}:${code}`);
+
+  await db(env).batch([
+    db(env).prepare('DELETE FROM email_verifications WHERE user_id = ?').bind(user.id),
+    db(env)
+      .prepare('INSERT INTO email_verifications (id, user_id, email_hash, domain, affiliation, code_hash, attempts, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
+      .bind(id, user.id, emailHash, emailDomain, affiliation, codeHash, now + EMAIL_CODE_TTL, now),
+  ]);
+
+  const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  if (env.RESEND_API_KEY) {
+    const from = env.MAIL_FROM || 'LDAS ID <noreply@id.ldas.jp>';
+    const sendRes = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${env.RESEND_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to: [normalizedEmail],
+        subject: `[LDAS ID] 所属ドメイン確認コード: ${code}`,
+        text: `LDAS ID の所属ドメイン確認コードは ${code} です（有効期限 10 分）。\n\n確認されるドメイン: ${emailDomain}\n所属表記: ${affiliation}\n\n※メールアドレス本体はサーバおよび証明書（VC）には保存されません。`,
+      }),
+    });
+    if (!sendRes.ok) {
+      const detail = await sendRes.text().catch(() => '');
+      throw Object.assign(new Error(`確認メールの送信に失敗しました (${sendRes.status}): ${detail.slice(0, 120)}`), { status: 502 });
+    }
+    return json({ ok: true, challengeId: id, emailDomain, affiliation, delivery: 'resend' });
+  }
+
+  if (isLocal) {
+    console.log(`[id-ldas local dev] Email verification code for ${emailDomain} (${affiliation}): ${code}`);
+    return json({ ok: true, challengeId: id, emailDomain, affiliation, delivery: 'local-dev', devCode: code });
+  }
+
+  return json({ error: 'メール送信機能（RESEND_API_KEY）がまだ設定されていません' }, 503);
+}
+
+async function emailVerify(request, env) {
+  const user = await currentUser(request, env);
+  if (!user) return json({ error: 'log in first' }, 401);
+
+  const body = await request.json().catch(() => ({}));
+  const challengeId = typeof body?.challengeId === 'string' ? body.challengeId.trim() : '';
+  const code = typeof body?.code === 'string' ? body.code.trim() : '';
+  if (!challengeId || !/^\d{6}$/.test(code)) {
+    return json({ error: '6 桁の確認コードを入力してください' }, 400);
+  }
+
+  const row = await db(env)
+    .prepare('SELECT * FROM email_verifications WHERE id = ? AND user_id = ?')
+    .bind(challengeId, user.id)
+    .first();
+  if (!row || Number(row.expires_at) < Date.now()) {
+    if (row) await db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id).run();
+    return json({ error: '確認コードの有効期限が切れています。最初からやり直してください' }, 400);
+  }
+
+  const expectedHash = await sha256Hex(`${row.id}:${code}`);
+  if (!constantTimeEqual(expectedHash, String(row.code_hash))) {
+    const nextAttempts = Number(row.attempts) + 1;
+    if (nextAttempts >= EMAIL_MAX_ATTEMPTS) {
+      await db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id).run();
+      return json({ error: '試行回数の上限に達しました。確認コードを再発行してください' }, 429);
+    }
+    await db(env).prepare('UPDATE email_verifications SET attempts = ? WHERE id = ?').bind(nextAttempts, row.id).run();
+    return json({ error: `確認コードが一致しません（残り ${EMAIL_MAX_ATTEMPTS - nextAttempts} 回）` }, 400);
+  }
+
+  const now = Date.now();
+  await db(env).batch([
+    db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id),
+    db(env)
+      .prepare('UPDATE users SET email_domain = ?, affiliation = ?, affiliation_method = ?, affiliation_verified_at = ? WHERE id = ?')
+      .bind(row.domain, row.affiliation, 'email-code', now, user.id),
+  ]);
+
+  return json({
+    ok: true,
+    emailDomain: row.domain,
+    affiliation: row.affiliation,
+    method: 'email-code',
+  });
+}
+
+async function grdmStart(request, url, env) {
+  const user = await currentUser(request, env);
+  if (!user) return Response.redirect(`${url.origin}/login?next=${encodeURIComponent('/auth/grdm')}`, 302);
+  if (!env.GRDM_CLIENT_ID || !env.GRDM_CLIENT_SECRET) {
+    return Response.redirect(`${url.origin}/?grdm=unconfigured`, 302);
+  }
+  const state = crypto.randomUUID();
+  await db(env)
+    .prepare('INSERT INTO challenges (id, challenge, user_id, name, expires_at) VALUES (?, ?, ?, ?, ?)')
+    .bind(state, 'grdm-link', user.id, '/', Date.now() + CHALLENGE_TTL)
+    .run();
+  const auth = new URL(`${GRDM_ACCOUNTS}/oauth2/authorize`);
+  auth.search = new URLSearchParams({
+    client_id: env.GRDM_CLIENT_ID,
+    response_type: 'code',
+    scope: 'osf.users.profile_read osf.users.email_read',
+    redirect_uri: `${url.origin}/auth/grdm/callback`,
+    state,
+  });
+  return new Response(null, { status: 302, headers: { Location: auth.toString(), 'Set-Cookie': cookie('ch', state, CHALLENGE_TTL) } });
+}
+
+async function grdmCallback(request, url, env) {
+  const state = url.searchParams.get('state');
+  if (!state || state !== cookies(request).ch) throw new Error('state mismatch; start again');
+  const ch = await takeChallenge(request, env);
+  if (url.searchParams.get('error')) return Response.redirect(`${url.origin}/?grdm=cancelled`, 302);
+  if (!ch.user_id) throw new Error('missing user session for GakuNin RDM link');
+
+  const tokenRes = await fetch(`${GRDM_ACCOUNTS}/oauth2/token`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded', Accept: 'application/json' },
+    body: new URLSearchParams({
+      client_id: env.GRDM_CLIENT_ID,
+      client_secret: env.GRDM_CLIENT_SECRET,
+      grant_type: 'authorization_code',
+      code: url.searchParams.get('code') || '',
+      redirect_uri: `${url.origin}/auth/grdm/callback`,
+    }),
+  });
+  const tokens = await tokenRes.json().catch(() => ({}));
+  if (!tokenRes.ok || !tokens.access_token) {
+    throw new Error(`GakuNin RDM token exchange failed: ${tokens.error_description || tokenRes.status}`);
+  }
+
+  // Fetch user profile & institutions using the short-lived access token, then discard the token (never persisted).
+  const authHeaders = { Authorization: `Bearer ${tokens.access_token}`, Accept: 'application/json' };
+  const meRes = await fetch(`${GRDM_API}/users/me/`, { headers: authHeaders });
+  const meJson = await meRes.json().catch(() => ({}));
+  if (!meRes.ok) throw new Error(`GakuNin RDM profile fetch failed (${meRes.status})`);
+
+  const instRes = await fetch(`${GRDM_API}/users/me/institutions/`, { headers: authHeaders }).catch(() => null);
+  const instJson = instRes && instRes.ok ? await instRes.json().catch(() => ({})) : {};
+  const instName = instJson?.data?.[0]?.attributes?.name || null;
+
+  const grdmEmail = meJson?.data?.attributes?.email;
+  let emailDomain = null;
+  let affiliation = instName;
+  if (typeof grdmEmail === 'string' && grdmEmail.includes('@')) {
+    const parsed = parseInstitutionalEmail(grdmEmail);
+    emailDomain = parsed.emailDomain;
+    if (!affiliation) affiliation = parsed.affiliation;
+  }
+  if (!affiliation && !emailDomain) {
+    return Response.redirect(`${url.origin}/?grdm=no_affiliation`, 302);
+  }
+
+  await db(env)
+    .prepare('UPDATE users SET email_domain = ?, affiliation = ?, affiliation_method = ?, affiliation_verified_at = ? WHERE id = ?')
+    .bind(emailDomain, affiliation, 'grdm-oauth', Date.now(), ch.user_id)
+    .run();
+
+  return Response.redirect(`${url.origin}/?grdm=linked`, 302);
 }
 
 // ---------------------------------------------------------------------------
