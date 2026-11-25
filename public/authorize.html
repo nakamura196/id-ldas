@@ -186,6 +186,10 @@ function matchesOriginPattern(u, pattern) {
   return true;
 }
 
+function clientIdMatches(clientId, rawRedirect, target) {
+  return clientId === target.origin || clientId === `redirect_uri:${rawRedirect}` || clientId === rawRedirect;
+}
+
 function parseAllowedReturnTo(raw, patterns) {
   if (!raw) return null;
   try {
@@ -212,7 +216,9 @@ async function post(path, body) {
 function render() {
   if (!targetUrl || !user) return;
   $('consentBox').hidden = false;
-  $('targetOrigin').textContent = reqClientId || targetUrl.origin;
+  // Always show where the credential will actually be sent. client_id is only a label the
+  // requester chose, so it is checked against redirect_uri below and never shown on its own.
+  $('targetOrigin').textContent = targetUrl.origin;
   $('protocolBadge').textContent = oid4vpMode ? 'OID4VP (vp_token)' : 'return_to';
   $('nonceInfo').textContent = reqNonce ? `nonce: ${reqNonce}` : '';
   $('cName').textContent = user.name || '';
@@ -341,6 +347,16 @@ $('switchBtn').onclick = async () => {
   if (!targetUrl) {
     $('invalidBox').hidden = false;
     $('invalidMsg').textContent = rawRedirect ? t('home.returnInvalid') : t('authz.missingReturn');
+    return;
+  }
+
+  // client_id must name the same place as redirect_uri (OID4VP 1.0: a bare origin, or the
+  // "redirect_uri:" prefix). Otherwise a page could ask for a credential addressed (aud) to
+  // another app and replay it there.
+  if (reqClientId && !clientIdMatches(reqClientId, rawRedirect, targetUrl)) {
+    $('invalidBox').hidden = false;
+    $('invalidMsg').textContent = t('authz.clientMismatch');
+    targetUrl = null;
     return;
   }
 

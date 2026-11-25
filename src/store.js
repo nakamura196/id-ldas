@@ -65,6 +65,13 @@ const SCHEMA = `
     created_at  INTEGER NOT NULL
   );
 
+  -- Fixed-window counters for rate limits (mail sending, self-revocation). Keys hold no raw IPs.
+  CREATE TABLE IF NOT EXISTS rate_limits (
+    key      TEXT PRIMARY KEY,
+    count    INTEGER NOT NULL,
+    reset_at INTEGER NOT NULL
+  );
+
   -- Short-lived email login/signup challenges (raw email and raw code are NEVER stored).
   CREATE TABLE IF NOT EXISTS email_login_challenges (
     id              TEXT PRIMARY KEY,
