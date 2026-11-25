@@ -619,6 +619,9 @@ async function issueCredential(request, url, env) {
         : user.orcid
           ? `${ORCID}/${user.orcid}`
           : `urn:ldas:user:${user.id}`,
+      // `id` above changes when a wallet or ORCID iD is linked later; this one never does.
+      // Relying parties should key accounts on it (the SD-JWT form carries it as `sub`).
+      ldasUserId: `urn:ldas:user:${user.id}`,
       ...(user.orcid ? { orcid: `${ORCID}/${user.orcid}` } : {}),
       name: user.name,
       ...(isLdasMember ? { memberOf: 'LDAS' } : {}),
@@ -659,6 +662,7 @@ async function issueCredential(request, url, env) {
     // The W3C-shaped `credential` above is kept only for the vc+jwt format.
     const subjectClaims = { ...credential.credentialSubject };
     delete subjectClaims.id;
+    delete subjectClaims.ldasUserId; // same value as `sub`
     const { type: _evidenceType, ...verification } = credential.evidence[0];
     const sdClaims = {
       iss: did,
