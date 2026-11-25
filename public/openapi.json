@@ -203,6 +203,355 @@
           "200": { "description": "Logged out", "content": { "application/vnd.api+json": { "schema": { "type": "object" } } } }
         }
       }
+    },
+    "/api/oid4vci/offers": {
+      "post": {
+        "tags": [
+          "App API (JSON:API v1.1)"
+        ],
+        "summary": "Create a one-time credential offer for a wallet app (OID4VCI 1.0, pre-authorized code)",
+        "description": "For the signed-in, approved person. Returns an `openid-credential-offer://` URI (show as a QR code) and a 6-digit tx_code the person types into the wallet. Valid 5 minutes, one use, at most 5 per person per day.",
+        "security": [
+          {
+            "sessionCookie": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Offer",
+            "content": {
+              "application/vnd.api+json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "data": {
+                      "type": "object",
+                      "properties": {
+                        "type": {
+                          "const": "credential-offer"
+                        },
+                        "id": {
+                          "type": "string"
+                        },
+                        "attributes": {
+                          "type": "object",
+                          "properties": {
+                            "offerUri": {
+                              "type": "string"
+                            },
+                            "txCode": {
+                              "type": "string",
+                              "pattern": "^[0-9]{6}$"
+                            },
+                            "expiresAt": {
+                              "type": "string",
+                              "format": "date-time"
+                            },
+                            "credentialConfigurationId": {
+                              "type": "string"
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/JsonApiError"
+          },
+          "403": {
+            "$ref": "#/components/responses/JsonApiError"
+          },
+          "429": {
+            "$ref": "#/components/responses/JsonApiError"
+          }
+        }
+      }
+    },
+    "/.well-known/openid-credential-issuer": {
+      "get": {
+        "tags": [
+          "Standard (W3C / IETF)"
+        ],
+        "summary": "OID4VCI 1.0 credential issuer metadata",
+        "description": "One configuration, `LdasMember_dc+sd-jwt` (format dc+sd-jwt, holder binding by jwk, proofs ES256 or EdDSA).",
+        "responses": {
+          "200": {
+            "description": "Issuer metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/.well-known/oauth-authorization-server": {
+      "get": {
+        "tags": [
+          "Standard (W3C / IETF)"
+        ],
+        "summary": "RFC 8414 authorization server metadata (pre-authorized code grant only)",
+        "responses": {
+          "200": {
+            "description": "AS metadata",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oid4vci/offer/{code}": {
+      "get": {
+        "tags": [
+          "Standard (W3C / IETF)"
+        ],
+        "summary": "Credential offer (credential_offer_uri target)",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Credential offer",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "OAuth error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "error_description": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oid4vci/token": {
+      "post": {
+        "tags": [
+          "Standard (W3C / IETF)"
+        ],
+        "summary": "Token endpoint: pre-authorized_code + tx_code -> access token (5 min)",
+        "description": "Each code works once; 5 wrong tx_code tries block it.",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "grant_type",
+                  "pre-authorized_code"
+                ],
+                "properties": {
+                  "grant_type": {
+                    "const": "urn:ietf:params:oauth:grant-type:pre-authorized_code"
+                  },
+                  "pre-authorized_code": {
+                    "type": "string"
+                  },
+                  "tx_code": {
+                    "type": "string"
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Access token",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "OAuth error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "error_description": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oid4vci/nonce": {
+      "post": {
+        "tags": [
+          "Standard (W3C / IETF)"
+        ],
+        "summary": "Nonce endpoint: a single-use c_nonce (5 min)",
+        "responses": {
+          "200": {
+            "description": "c_nonce",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "c_nonce": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/oid4vci/credential": {
+      "post": {
+        "tags": [
+          "Standard (W3C / IETF)"
+        ],
+        "summary": "Credential endpoint: returns the dc+sd-jwt with all disclosures, bound (cnf.jwk) to the key in the proof",
+        "security": [
+          {
+            "bearerAccessToken": []
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "credential_configuration_id",
+                  "proofs"
+                ],
+                "properties": {
+                  "credential_configuration_id": {
+                    "const": "LdasMember_dc+sd-jwt"
+                  },
+                  "proofs": {
+                    "type": "object",
+                    "properties": {
+                      "jwt": {
+                        "type": "array",
+                        "minItems": 1,
+                        "maxItems": 1,
+                        "items": {
+                          "type": "string"
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Issued credential",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "credentials": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "credential": {
+                            "type": "string"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "OAuth error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "error_description": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "OAuth error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "error": {
+                      "type": "string"
+                    },
+                    "error_description": {
+                      "type": "string"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -212,6 +561,11 @@
         "in": "cookie",
         "name": "sid",
         "description": "HttpOnly session cookie issued after signing in at /login. Sign in via the top bar button to execute authenticated endpoints."
+      },
+      "bearerAccessToken": {
+        "type": "http",
+        "scheme": "bearer",
+        "description": "Access token from /oid4vci/token"
       }
     },
     "schemas": {

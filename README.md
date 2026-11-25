@@ -10,6 +10,7 @@ Live: https://id.ldas.jp
 - **Issue a credential** (W3C VC Data Model 2.0 `vc+jwt` or IETF SD-JWT VC `dc+sd-jwt` with `vct`, EdDSA), signed by `did:web:id.ldas.jp`.
   With a linked wallet the subject is `did:pkh:eip155:11155111:<address>`, so only whoever holds that wallet can show it is theirs.
 - **OID4VP 1.0 + RFC 9901 Key Binding (`kb+jwt`)** (`/authorize`): parses `dcql_query`, generates an ephemeral P-256 holder key pair in the browser (`cnf.jwk`), signs a Key Binding JWT (`typ: "kb+jwt"`) containing `nonce`, `aud`, and `sd_hash`, and returns a DCQL-compliant JSON object in `#vp_token={"<query_id>":["<sd-jwt+kb>"]}`. (If an API caller omits `cnfJwk`, the server falls back to embedding `nonce`/`aud` in the issuer JWT as a simplified mode.)
+- **OID4VCI 1.0, pre-authorized code** (`src/oid4vci.js`): "Add to wallet" on `/` shows a one-time offer (QR code / `openid-credential-offer://` link) and a 6-digit `tx_code`. A wallet app (tested with walt.id wallet-api2 1.2.1) receives the `dc+sd-jwt` with all disclosures, bound (`cnf.jwk`) to the key in its proof JWT (ES256 or EdDSA), and chooses what to disclose when presenting. Codes, tokens and nonces are single-use, expire in 5 minutes and are stored only as SHA-256 hashes; 5 offers per person per day.
 - **Signed W3C Bitstring Status List v1.0** (`/status/1`): served as an Ed25519-signed `application/vc+jwt` credential so verifiers authenticate the revocation list with `did:web:id.ldas.jp#key-1` before checking the bitstring. Users can also self-revoke issued VCs immediately from `/`.
 - **Verify in the browser** (`/verify`): fetch the issuer's DID document, check the VC signature and signed `/status/1` revocation list, then ask the presenter to sign a fresh message with the wallet (holder check). The ID server's database is never asked.
 - **JSON:API v1.1 + OpenAPI 3.1 / Swagger UI** (`/docs`, `/openapi.json`): app-specific `/api/*` endpoints use `application/vnd.api+json` so custom fields stay inside `data.attributes`, cleanly separated from standard W3C/IETF endpoints.
@@ -27,6 +28,8 @@ Live: https://id.ldas.jp
 | `/admin` | list people and stop/allow them (admins only, `ADMIN_ORCIDS`) |
 | `/.well-known/did.json` | W3C DID document (Ed25519 public key) |
 | `/status/1` | W3C Bitstring Status List v1.0 (Ed25519-signed `application/vc+jwt`) |
+| `/.well-known/openid-credential-issuer`, `/.well-known/oauth-authorization-server` | OID4VCI 1.0 issuer metadata and RFC 8414 AS metadata |
+| `/oid4vci/offer/<code>`, `/oid4vci/token`, `/oid4vci/nonce`, `/oid4vci/credential` | OID4VCI offer, token (pre-authorized code + `tx_code`), nonce and credential endpoints (OAuth error JSON) |
 | `/auth/orcid`, `/auth/orcid/callback` | ORCID sign-in (OIDC) |
 | `/auth/grdm`, `/auth/grdm/callback` | GakuNin RDM institutional affiliation link (OAuth2) |
 | `/api/*` | App-specific JSON:API v1.1 (`application/vnd.api+json`, custom fields inside `data.attributes`) |
@@ -50,6 +53,14 @@ npm run dev
 ```
 
 Open http://localhost:8787. Without `ISSUER_JWK`, a throwaway signing key is made per dev process. Without `RESEND_API_KEY` on `localhost`, 6-digit email verification codes are shown in the UI/console for local testing. ORCID sign-in does not work locally (ORCID only accepts the registered HTTPS redirect URI).
+
+To try a wallet app running in Docker (e.g. walt.id), the wallet must reach the same origin the Worker puts in the offer. Run the dev server with that origin as the local upstream and a throwaway issuer key (the dev key is only made for `localhost`):
+
+```
+ISSUER_JWK="$(node -e "const {generateKeyPairSync}=require('crypto');console.log(JSON.stringify(generateKeyPairSync('ed25519').privateKey.export({format:'jwk'})))")" CLOUDFLARE_INCLUDE_PROCESS_ENV=true npx wrangler dev --port 8830 --local-upstream host.docker.internal:8830
+```
+
+The issuer is then `http://host.docker.internal:8830` (`did:web:host.docker.internal%3A8830`). Verifiers resolve `did:web` over HTTPS only, so the issuer signature check fails locally; that is expected.
 
 ## Deploy
 

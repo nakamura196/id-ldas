@@ -21,6 +21,7 @@ import { SignJWT, importJWK, generateKeyPair, exportJWK, createRemoteJWKSet, jwt
 import { SdJwtInstance, uint8ArrayToBase64Url } from '@sd-jwt/core';
 import { db } from './store.js';
 import { recoverAddress, checksum } from './eth.js';
+import { oid4vciRoute, createOffer } from './oid4vci.js';
 
 export { Store } from './store.js';
 
@@ -30,6 +31,8 @@ const SESSION_TTL = 24 * 60 * 60 * 1000;
 const VC_TTL_DAYS = 30;
 const ORCID = 'https://orcid.org';
 const orcidKeys = createRemoteJWKSet(new URL(`${ORCID}/oauth/jwks`));
+// What the wallet issuance module (src/oid4vci.js) borrows from this file.
+const OID4VCI_DEPS = { db, currentUser, issueMemberSdJwt, hitLimit, jsonApi, jsonApiError };
 
 export default {
   async fetch(request, env) {
@@ -67,6 +70,8 @@ async function route(request, env) {
       if (url.pathname === '/auth/orcid/callback') return await orcidCallback(request, url, env);
       if (url.pathname === '/auth/grdm') return await grdmStart(request, url, env);
       if (url.pathname === '/auth/grdm/callback') return await grdmCallback(request, url, env);
+      const vci = await oid4vciRoute(request, url, env, OID4VCI_DEPS); // wallet apps (OID4VCI)
+      if (vci) return vci;
       if (url.pathname.startsWith('/api/')) {
         if (isCrossOriginWrite(request, url)) return jsonApiError('cross-origin request refused', 403);
         return await api(request, url, env);
@@ -95,6 +100,7 @@ async function api(request, url, env) {
     case 'POST /api/logout':           return logout(request, env);
     case 'POST /api/credential':       return issueCredential(request, url, env);
     case 'POST /api/credential/revoke': return revokeOwnCredential(request, env);
+    case 'POST /api/oid4vci/offers':   return createOffer(request, url, env, OID4VCI_DEPS);
     case 'POST /api/wallet/challenge': return walletChallenge(request, url, env);
     case 'POST /api/wallet/verify':    return walletVerify(request, env);
     case 'POST /api/email/challenge':      return emailChallenge(request, url, env);

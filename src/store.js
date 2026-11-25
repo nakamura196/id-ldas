@@ -1,6 +1,7 @@
 // Storage: one Durable Object with its own SQLite database (free plan; no D1 needed).
 // The only data the ID server keeps. No passwords and no private keys.
 import { DurableObject } from 'cloudflare:workers';
+import { OID4VCI_SCHEMA } from './oid4vci.js';
 
 const SCHEMA = `
   CREATE TABLE IF NOT EXISTS users (
@@ -106,6 +107,7 @@ export class Store extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     ctx.storage.sql.exec(SCHEMA);
+    ctx.storage.sql.exec(OID4VCI_SCHEMA); // wallet issuance (src/oid4vci.js)
     const have = new Set(ctx.storage.sql.exec('PRAGMA table_info(users)').toArray().map((c) => c.name));
     for (const m of MIGRATIONS) if (!have.has(m.split(' ')[5])) ctx.storage.sql.exec(m);
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_orcid ON users(orcid)');

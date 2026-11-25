@@ -128,6 +128,25 @@
       </div>
     </div>
 
+    <div class="member-card" id="offerCard" hidden>
+      <h2 class="member-card-title" data-i18n="home.offerTitle"></h2>
+      <p class="hint" style="margin:0 0 12px;" data-i18n="home.offerLead"></p>
+      <button id="makeOffer" class="secondary" data-i18n="home.offerButton"></button>
+      <div id="offerBox" hidden style="margin-top:16px;">
+        <img id="offerQr" alt="QR code" style="display:block; image-rendering:pixelated; background:#fff; border-radius:8px;">
+        <p style="margin:12px 0 4px;"><span data-i18n="home.offerCodeLabel"></span>:
+          <strong id="offerTx" style="font-size:1.6em; letter-spacing:0.2em; font-family:ui-monospace,monospace;"></strong></p>
+        <p id="offerExpiry" class="hint"></p>
+        <p class="hint" style="font-weight:600;" data-i18n="home.offerNote"></p>
+        <p class="hint" style="margin-top:12px;" data-i18n="home.offerLinkLabel"></p>
+        <div class="inline-row" style="margin-top:4px;">
+          <input id="offerLink" type="text" readonly style="flex:1; min-width:220px;">
+          <button id="copyOffer" type="button" class="secondary small" data-i18n="home.offerCopy"></button>
+        </div>
+        <p style="margin:8px 0 0;"><a id="offerOpen" data-i18n="home.offerOpen"></a></p>
+      </div>
+    </div>
+
     <details class="optional-box">
       <summary data-i18n="home.walletOptionalSummary"></summary>
       <div class="note" style="margin-top:0;">
@@ -161,6 +180,7 @@ let jwt = '';
 let grdmEnabled = false;
 let emailChallengeId = '';
 let showAffilFormOverride = false;
+let offerExpiresAt = '';
 
 async function post(path, body) {
   const r = await fetch(path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body ?? {}) });
@@ -203,6 +223,8 @@ function render() {
   }
   $('grdmLink').hidden = !grdmEnabled;
   $('issue').hidden = user.status !== 'approved' && user.status !== 'verified';
+  $('offerCard').hidden = $('issue').hidden;
+  if (offerExpiresAt) $('offerExpiry').textContent = t('home.offerExpiry', new Date(offerExpiresAt).toLocaleTimeString());
   $('walletRow').hidden = !user.wallet;
   $('wallet').textContent = user.wallet || t('home.none');
   $('linkWallet').textContent = t(user.wallet ? 'home.relink' : 'home.link');
@@ -310,7 +332,7 @@ $('revokeSelf').onclick = async () => {
   } catch (err) { msg(err.message, true); }
 };
 
-$('logout').onclick = async () => { await post('/api/logout'); $('vc').hidden = true; jwt = ''; msg(''); refresh(); };
+$('logout').onclick = async () => { await post('/api/logout'); $('vc').hidden = true; $('offerBox').hidden = true; jwt = ''; msg(''); refresh(); };
 
 $('issue').onclick = async () => {
   try {
@@ -321,6 +343,31 @@ $('issue').onclick = async () => {
     $('vc').hidden = false;
     render();
   } catch (err) { msg(err.message, true); }
+};
+
+// Wallet app (OID4VCI): a one-time offer link, shown as a QR code, plus a 6-digit code typed in the app.
+$('makeOffer').onclick = async () => {
+  const btn = $('makeOffer');
+  btn.disabled = true;
+  try {
+    const res = await post('/api/oid4vci/offers');
+    offerExpiresAt = res.expiresAt;
+    $('offerLink').value = res.offerUri;
+    $('offerOpen').href = res.offerUri;
+    $('offerTx').textContent = res.txCode;
+    // QR library loaded only when needed (qrcode-generator 1.4.4, MIT, no dependencies).
+    const { default: qrcode } = await import('https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm');
+    const qr = qrcode(0, 'M');
+    qr.addData(res.offerUri);
+    qr.make();
+    $('offerQr').src = qr.createDataURL(5, 4);
+    $('offerBox').hidden = false;
+    render();
+  } catch (err) { msg(err.message, true); } finally { btn.disabled = false; }
+};
+$('copyOffer').onclick = async () => {
+  try { await navigator.clipboard.writeText($('offerLink').value); msg(t('home.offerCopied')); }
+  catch { $('offerLink').select(); }
 };
 
 const q = new URLSearchParams(location.search);
