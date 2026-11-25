@@ -36,7 +36,7 @@ Live: https://id.ldas.jp
 | Where | What |
 |---|---|
 | Durable Object SQLite (server) | ORCID iD and name, verified `affiliation` & `email_domain` (never raw email), linked wallet address, status & revocation bit indices, passkey **public** keys, sessions. No passwords, no private keys, no OAuth tokens |
-| Worker secrets | issuer private key (`ISSUER_JWK`), ORCID (`ORCID_CLIENT_SECRET`), Resend (`RESEND_API_KEY`), GakuNin RDM (`GRDM_CLIENT_ID`, `GRDM_CLIENT_SECRET`) |
+| Worker secrets | issuer private key (`ISSUER_JWK`), email-hash pepper (`EMAIL_HASH_PEPPER`), ORCID (`ORCID_CLIENT_SECRET`), Resend (`RESEND_API_KEY`), GakuNin RDM (`GRDM_CLIENT_ID`, `GRDM_CLIENT_SECRET`) |
 | User's device | passkey private key, wallet private key, ephemeral P-256 `kb+jwt` key (never leave the device) |
 | User | the VC / SD-JWT string |
 
