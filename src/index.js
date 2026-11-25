@@ -225,7 +225,7 @@ async function withChallenge(env, options, { userId = null, name = null }) {
     .bind(id, options.challenge, userId, name, Date.now() + CHALLENGE_TTL).run();
   return jsonApi(
     { type: 'webauthn-options', id, attributes: options },
-    { headers: { 'Set-Cookie': cookie('ch', id, CHALLENGE_TTL) } },
+    { headers: { 'Set-Cookie': cookie(CH_COOKIE, id, CHALLENGE_TTL) } },
   );
 }
 
@@ -255,12 +255,12 @@ async function orcidStart(url, env) {
     state,
     nonce,
   });
-  return new Response(null, { status: 302, headers: { Location: auth.toString(), 'Set-Cookie': cookie('ch', state, CHALLENGE_TTL) } });
+  return new Response(null, { status: 302, headers: { Location: auth.toString(), 'Set-Cookie': cookie(CH_COOKIE, state, CHALLENGE_TTL) } });
 }
 
 async function orcidCallback(request, url, env) {
   const state = url.searchParams.get('state');
-  if (!state || state !== cookies(request).ch) throw new Error('state mismatch; start again');
+  if (!state || state !== cookies(request)[CH_COOKIE]) throw new Error('state mismatch; start again');
   const ch = await takeChallenge(request, env);
   if (url.searchParams.get('error')) return Response.redirect(`${url.origin}/?orcid=cancelled`, 302);
 
@@ -302,7 +302,7 @@ function isAdminOrcid(env, orcid) {
 }
 
 async function takeChallenge(request, env) {
-  const id = cookies(request).ch;
+  const id = cookies(request)[CH_COOKIE];
   if (!id) throw new Error('no challenge; start again');
   const ch = await db(env).prepare('DELETE FROM challenges WHERE id = ? RETURNING *').bind(id).first();
   if (!ch || ch.expires_at < Date.now()) throw new Error('challenge expired; start again');
@@ -317,7 +317,7 @@ async function newSession(env, userId) {
   const id = crypto.randomUUID();
   await db(env).prepare('INSERT INTO sessions (id, user_id, expires_at) VALUES (?, ?, ?)')
     .bind(id, userId, Date.now() + SESSION_TTL).run();
-  return cookie('sid', id, SESSION_TTL);
+  return cookie(SID_COOKIE, id, SESSION_TTL);
 }
 
 async function startSession(env, userId) {
@@ -328,7 +328,7 @@ async function startSession(env, userId) {
 }
 
 async function currentUser(request, env) {
-  const sid = cookies(request).sid;
+  const sid = cookies(request)[SID_COOKIE];
   if (!sid) return null;
   return db(env).prepare(
     'SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.id = ? AND s.expires_at > ?'
@@ -372,11 +372,11 @@ async function me(request, url, env) {
 }
 
 async function logout(request, env) {
-  const sid = cookies(request).sid;
+  const sid = cookies(request)[SID_COOKIE];
   if (sid) await db(env).prepare('DELETE FROM sessions WHERE id = ?').bind(sid).run();
   return jsonApi(
     { type: 'session', id: 'current', attributes: { ok: true } },
-    { headers: { 'Set-Cookie': cookie('sid', '', 0) } },
+    { headers: { 'Set-Cookie': cookie(SID_COOKIE, '', 0) } },
   );
 }
 
@@ -743,7 +743,7 @@ async function walletChallenge(request, url, env) {
     .bind(id, message, user.id, Date.now() + CHALLENGE_TTL).run();
   return jsonApi(
     { type: 'wallet-challenge', id, attributes: { message } },
-    { headers: { 'Set-Cookie': cookie('ch', id, CHALLENGE_TTL) } },
+    { headers: { 'Set-Cookie': cookie(CH_COOKIE, id, CHALLENGE_TTL) } },
   );
 }
 
@@ -979,8 +979,24 @@ async function emailVerify(request, env) {
   });
 }
 
+// Email addresses are stored only as HMAC-SHA256(pepper, email). The pepper is its own secret
+// (EMAIL_HASH_PEPPER): it used to be the issuer's signing key, which tied the two together —
+// rotating the signing key would have locked every email user out, and the signing key was being
+// fed into a second algorithm. Rows hashed with the old key are re-keyed on their next sign-in.
+const DEV_PEPPER = 'ldas-id-local-dev-pepper-not-for-prod';
+
 async function hmacEmailHash(normalizedEmail, env) {
-  const pepper = env.ISSUER_JWK || 'ldas-id-local-dev-pepper-not-for-prod';
+  return hmacHex(env.EMAIL_HASH_PEPPER || env.ISSUER_JWK || DEV_PEPPER, normalizedEmail);
+}
+
+// Hash under the pepper used before EMAIL_HASH_PEPPER existed (null when there is nothing to migrate).
+async function legacyEmailHash(normalizedEmail, env) {
+  const legacy = env.ISSUER_JWK || DEV_PEPPER;
+  if (!env.EMAIL_HASH_PEPPER || env.EMAIL_HASH_PEPPER === legacy) return null;
+  return hmacHex(legacy, normalizedEmail);
+}
+
+async function hmacHex(pepper, message) {
   const key = await crypto.subtle.importKey(
     'raw',
     new TextEncoder().encode(pepper),
@@ -988,7 +1004,7 @@ async function hmacEmailHash(normalizedEmail, env) {
     false,
     ['sign'],
   );
-  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(normalizedEmail));
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(message));
   return Array.from(new Uint8Array(sig)).map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
@@ -997,6 +1013,13 @@ async function emailLoginStart(request, url, env) {
   const { normalizedEmail, emailDomain, affiliation } = parseInstitutionalEmail(body?.email);
   const isFreeWebmail = FREE_WEBMAIL_DOMAINS.has(emailDomain) ? 1 : 0;
   const emailHash = await hmacEmailHash(normalizedEmail, env);
+  const oldHash = await legacyEmailHash(normalizedEmail, env);
+  if (oldHash) {
+    // Re-key an account hashed under the old pepper (no-op when there is none, or it is already moved).
+    await db(env).prepare(
+      'UPDATE users SET email_login_hash = ? WHERE email_login_hash = ? AND NOT EXISTS (SELECT 1 FROM users WHERE email_login_hash = ?)'
+    ).bind(emailHash, oldHash, emailHash).run();
+  }
   const now = Date.now();
 
   const recent = await db(env)
@@ -1152,7 +1175,7 @@ async function grdmStart(request, url, env) {
     redirect_uri: `${url.origin}/auth/grdm/callback`,
     state,
   });
-  return new Response(null, { status: 302, headers: { Location: auth.toString(), 'Set-Cookie': cookie('ch', state, CHALLENGE_TTL) } });
+  return new Response(null, { status: 302, headers: { Location: auth.toString(), 'Set-Cookie': cookie(CH_COOKIE, state, CHALLENGE_TTL) } });
 }
 
 const FREE_WEBMAIL_DOMAINS = new Set([
@@ -1191,7 +1214,7 @@ function normalizeGrdmInstitution(inst) {
 
 async function grdmCallback(request, url, env) {
   const state = url.searchParams.get('state');
-  if (!state || state !== cookies(request).ch) throw new Error('state mismatch; start again');
+  if (!state || state !== cookies(request)[CH_COOKIE]) throw new Error('state mismatch; start again');
   const ch = await takeChallenge(request, env);
   const isLoginMode = ch.challenge === 'grdm-login' || !ch.user_id;
   if (url.searchParams.get('error')) {
@@ -1362,6 +1385,12 @@ function jsonApiError(title, status = 400, headers = {}) {
     },
   );
 }
+
+// The __Host- prefix makes the browser refuse any cookie of that name that carries a Domain attribute
+// or comes from another host. Without it, a sibling *.ldas.jp site could set `sid=...; Domain=ldas.jp`
+// and silently sign a visitor into the attacker's account (or fix the OAuth `state` cookie).
+const SID_COOKIE = '__Host-sid';
+const CH_COOKIE = '__Host-ch';
 
 function cookie(name, value, ttlMs) {
   return `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(ttlMs / 1000)}`;

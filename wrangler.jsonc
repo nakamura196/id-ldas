@@ -28,4 +28,5 @@
     "MAIL_FROM": "LDAS ID <noreply@ldas.jp>"
   }
   // Secret ISSUER_JWK (Ed25519 private key, JWK JSON) is set with `wrangler secret put`, from 1Password.
+  // Secret EMAIL_HASH_PEPPER (HMAC key for email hashes) is set by scripts/setup/email-pepper.zsh.
 }
