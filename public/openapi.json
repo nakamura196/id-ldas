@@ -3,7 +3,7 @@
   "info": {
     "title": "LDAS ID (id.ldas.jp) API",
     "version": "1.1.0",
-    "description": "Standard W3C/IETF/OID4VP endpoints (/.well-known/did.json, /status/1) and app-specific JSON:API v1.1 endpoints (/api/*) where custom fields live inside `data.attributes`."
+    "description": "Standard W3C/IETF/OID4VP endpoints (/.well-known/did.json, /status/1, /status/token/1) and app-specific JSON:API v1.1 endpoints (/api/*) where custom fields live inside `data.attributes`."
   },
   "servers": [
     { "url": "https://id.ldas.jp", "description": "Production" },
@@ -29,11 +29,24 @@
     "/status/1": {
       "get": {
         "tags": ["Standard (W3C / IETF)"],
-        "summary": "W3C Bitstring Status List v1.0 (signed vc+jwt)",
+        "summary": "W3C Bitstring Status List v1.0 (signed vc+jwt), for the vc+jwt credential",
         "responses": {
           "200": {
             "description": "Ed25519-signed BitstringStatusListCredential JWT",
             "content": { "application/vc+jwt": { "schema": { "type": "string" } } }
+          }
+        }
+      }
+    },
+    "/status/token/1": {
+      "get": {
+        "tags": ["Standard (W3C / IETF)"],
+        "summary": "IETF Token Status List (signed statuslist+jwt), for the dc+sd-jwt credential",
+        "description": "Referenced from the SD-JWT VC claim `status.status_list = { idx, uri }`. Same indices as /status/1; 1 bit per entry (least significant bit first), ZLIB-compressed. 0 = valid, 1 = revoked.",
+        "responses": {
+          "200": {
+            "description": "Ed25519-signed Status List Token",
+            "content": { "application/statuslist+jwt": { "schema": { "type": "string" } } }
           }
         }
       }

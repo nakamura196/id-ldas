@@ -1,0 +1,41 @@
+<section id="before" class="has-note">
+<div class="split">
+<div class="code">
+<p class="ln">{</p>
+<p class="ln i1 hl-old">"@context": ["https://www.w3.org/ns/credentials/v2"],</p>
+<p class="ln i1 hl-old">"type": ["VerifiableCredential", "LdasMemberCredential"],</p>
+<p class="ln i1">"vct": "https://id.ldas.jp/credentials/member/v1",</p>
+<p class="ln i1 hl-old">"issuer": "did:web:id.ldas.jp",</p>
+<p class="ln i1">"iss": "did:web:id.ldas.jp",</p>
+<p class="ln i1">"iat": 1795546337, "exp": 1798138337,</p>
+<p class="ln i1 hl-old">"validFrom": "2026-11-24T18:52:17Z",</p>
+<p class="ln i1 hl-old">"validUntil": "2026-12-24T18:52:17Z",</p>
+<p class="ln i1 hl-old">"credentialSubject": {</p>
+<p class="ln i2">"id": "did:pkh:eip155:11155111:0x(伏せ字)",</p>
+<p class="ln i2">"orcid": "https://orcid.org/0000-0001-8245-7925",</p>
+<p class="ln i2">"name": "Satoru Nakamura",</p>
+<p class="ln i2">"memberOf": "LDAS",</p>
+<p class="ln i2">"wallet": "0x(伏せ字)",</p>
+<p class="ln i2">"affiliation": "The University of Tokyo",</p>
+<p class="ln i2">"emailDomain": "u-tokyo.ac.jp"</p>
+<p class="ln i1 hl-old">},</p>
+<p class="ln i1 hl-old">"credentialStatus": {</p>
+<p class="ln i2">"type": "BitstringStatusListEntry",</p>
+<p class="ln i2">"statusListIndex": "2",</p>
+<p class="ln i2">"statusListCredential": "https://id.ldas.jp/status/1"</p>
+<p class="ln i1 hl-old">},</p>
+<p class="ln i1 hl-old">"evidence": [{ "method": "ORCID sign-in only …", … }]</p>
+<p class="ln">}</p>
+</div>
+<div class="side">
+<p class="tag-old">Before：直す前の本番</p>
+<h2>typ（形式の宣言）は IETF 式、<br>中身は W3C 式</h2>
+<p class="pt">見出し（ヘッダ）の typ は <b>"dc+sd-jwt"</b>。IETF 式と名乗っている。</p>
+<p class="pt-old">色の付いた行が W3C 式にしかない書き方。</p>
+<p class="pt">氏名・所属などは、<b>credentialSubject</b> という箱の中にある。</p>
+<p class="pt">失効の場所は W3C 式の名前（credentialStatus）で書いてある。</p>
+</div>
+</div>
+<p class="note">2026-11-24、本番の id.ldas.jp で中村の会員証を発行し、中身を取り出したもの。ウォレットのアドレスは伏せた。見せる項目をすべて開いた状態で、実際の会員証では本人が選んだ項目だけが開く。</p>
+<aside>id はウォレットに結びつけた本人を指す。番号 2 は失効リストの中での中村の位置。</aside>
+</section>

@@ -1,0 +1,26 @@
+<section id="layers" class="alt">
+<p class="eyebrow">前提</p>
+<h2>会員証には 3 つの層がある。直すのは中身だけ</h2>
+<div class="split">
+<div class="layer-outer">
+<p class="lt">渡し方：OID4VP 1.0</p>
+<p class="ls">会員証をどう受け渡すかの手順。変えない</p>
+<div class="layer-label">
+<p class="lt">typ（形式の宣言）= "dc+sd-jwt"</p>
+<p class="ls">「IETF 式の会員証です」という宣言。変えない</p>
+<div class="layer-body">
+<p class="lt" style="color:#A8481A;">中身 before：W3C 式（項目が箱の中）</p>
+<p class="lt" style="color:#1D5A9E;">中身 after：IETF 式（項目が一段目）</p>
+<p class="ls">ここだけを直す</p>
+</div>
+</div>
+</div>
+<div class="side">
+<h3>IIIF でいえば</h3>
+<p class="pt">@context は Presentation 3 と名乗っているのに、中身は Presentation 2 の構造になっている状態。</p>
+<p class="pt">こちらで作った道具は両方を知っているので、読めていた。</p>
+<p class="pt-old">他所の道具は typ を信じて読むので、項目が見つからない。</p>
+</div>
+</div>
+<aside>W3C と IETF の 2 つの団体が、会員証の書き方を別々に決めている。中身の情報は同じで、置き場所が違う。</aside>
+</section>
