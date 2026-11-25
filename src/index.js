@@ -549,6 +549,19 @@ const sdSaltGenerator = (length) => {
   return uint8ArrayToBase64Url(bytes);
 };
 
+// How this person signed in, written for the VC's evidence. Before 2026-11-25 every credential
+// said "ORCID sign-in only", even for people who signed in by email or GakuNin RDM.
+function signInMethod(user) {
+  const routes = [];
+  if (user.orcid) routes.push('ORCID sign-in');
+  if (user.grdm_id) routes.push('GakuNin RDM sign-in');
+  if (user.email_login_hash) routes.push('one-time code sent to an email address');
+  const how = routes.length ? routes.join(' + ') : 'unknown sign-in';
+  if (user.status === 'approved' && user.approved_by) return `${how}, approved by an administrator`;
+  if (user.status === 'approved') return `${how}; approved automatically (anyone with an ORCID iD)`;
+  return `${how} only; not an LDAS member`;
+}
+
 async function issueCredential(request, url, env) {
   const user = await currentUser(request, env);
   if (!user) return jsonApiError('log in first', 401);
@@ -622,8 +635,11 @@ async function issueCredential(request, url, env) {
     },
     evidence: [{
       type: ['Evidence'],
-      method: user.approved_by ? 'ORCID sign-in, approved by an administrator' : 'ORCID sign-in only (anyone with an ORCID iD)',
-      ...(user.approved_by && { approvedBy: `${ORCID}/${user.approved_by}` }),
+      method: signInMethod(user),
+      // Every sign-in route takes the name from a field the person typed themselves
+      // (the ORCID record, the GakuNin RDM profile, or the email sign-in form). Nobody checked it.
+      nameVerification: 'self-asserted (not checked by the issuer)',
+      ...(isLdasMember && user.approved_by && { approvedBy: `${ORCID}/${user.approved_by}` }),
       ...(user.wallet && { wallet: 'holder signed a one-time message with this wallet (EIP-191)' }),
       ...(user.email_domain && {
         affiliationVerification: user.affiliation_method === 'grdm-oauth'
@@ -649,7 +665,10 @@ async function issueCredential(request, url, env) {
       iat: credential.iat,
       exp: credential.exp,
       vct: `${url.origin}/credentials/member/v1`,
-      sub: credential.credentialSubject.id,
+      // `sub` is never hidden, so it must not be the wallet DID or the ORCID URL:
+      // that would show both even when the holder chose not to disclose them.
+      // Use the opaque account id; the wallet and ORCID iD stay selectively disclosable below.
+      sub: `urn:ldas:user:${user.id}`,
       ...(cnfJwk ? { cnf: { jwk: cnfJwk } } : {}),
       ...(!cnfJwk && nonce ? { nonce } : {}),
       ...(!cnfJwk && aud ? { aud } : {}),
@@ -1152,19 +1171,21 @@ function normalizeGrdmInstitution(inst) {
     const m = /([a-z0-9-]+\.ac\.jp|[a-z0-9-]+\.edu|[a-z0-9-]+\.ubc\.ca)/i.exec(inst.attributes.auth_url);
     if (m) domain = m[1].toLowerCase();
   }
-  if (/東京大学|university of tokyo|utokyo/i.test(rawName) || id.includes('utokyo') || id.includes('u-tokyo')) {
-    return { affiliation: 'The University of Tokyo', emailDomain: domain || 'u-tokyo.ac.jp' };
-  }
-  if (/京都大学|kyoto university/i.test(rawName) || id.includes('kyoto')) {
-    return { affiliation: 'Kyoto University', emailDomain: domain || 'kyoto-u.ac.jp' };
-  }
-  if (/国立情報学研究所|national institute of informatics/i.test(rawName) || id === 'nii') {
-    return { affiliation: 'National Institute of Informatics', emailDomain: domain || 'nii.ac.jp' };
-  }
+  // Match the whole name or the whole id, never a part of it: "kyoto" is also in
+  // Kyoto University of Education, and "Kyoto University" starts "Kyoto University of the Arts".
+  const name = rawName.toLowerCase().replace(/^the\s+/, '');
+  const named = [
+    { names: ['東京大学', 'university of tokyo'], ids: ['utokyo', 'u-tokyo'], affiliation: 'The University of Tokyo', root: 'u-tokyo.ac.jp' },
+    { names: ['京都大学', 'kyoto university'], ids: ['kyoto-u', 'kyotou'], affiliation: 'Kyoto University', root: 'kyoto-u.ac.jp' },
+    { names: ['国立情報学研究所', 'national institute of informatics'], ids: ['nii'], affiliation: 'National Institute of Informatics', root: 'nii.ac.jp' },
+  ].find((e) => e.names.includes(name) || e.ids.includes(id));
   if (domain) {
+    // The institution's own email domain is the strongest signal; the name only labels it.
     const resolved = resolveDomainAffiliation(domain);
-    return { affiliation: rawName || resolved.affiliation, emailDomain: resolved.emailDomain };
+    const known = KNOWN_INSTITUTIONS.some((e) => e.root === resolved.emailDomain);
+    return { affiliation: known ? resolved.affiliation : rawName || resolved.affiliation, emailDomain: resolved.emailDomain };
   }
+  if (named) return { affiliation: named.affiliation, emailDomain: named.root };
   return rawName ? { affiliation: rawName, emailDomain: null } : null;
 }
 
@@ -1272,7 +1293,8 @@ async function requireAdmin(request, env) {
 async function adminUsers(request, env) {
   await requireAdmin(request, env);
   const users = await db(env).prepare(
-    "SELECT id, name, orcid, wallet, status, affiliation, email_domain, approved_by, approved_at, created_at FROM users WHERE orcid IS NOT NULL ORDER BY status = 'pending' DESC, created_at DESC"
+    // Everyone, not only ORCID users: people who signed in by email or GakuNin RDM can also be stopped.
+    "SELECT id, name, orcid, wallet, status, affiliation, email_domain, approved_by, approved_at, created_at, grdm_id IS NOT NULL AS has_grdm, email_login_hash IS NOT NULL AS has_email FROM users ORDER BY status = 'pending' DESC, created_at DESC"
   ).all();
   return jsonApi(
     users.map((u) => ({
@@ -1288,6 +1310,7 @@ async function adminUsers(request, env) {
         approved_by: u.approved_by,
         approved_at: u.approved_at,
         created_at: u.created_at,
+        sign_in: [u.orcid && 'orcid', u.has_grdm && 'grdm', u.has_email && 'email'].filter(Boolean),
       },
     })),
     { meta: { count: users.length } },
@@ -1297,7 +1320,8 @@ async function adminUsers(request, env) {
 async function adminDecide(request, env) {
   const admin = await requireAdmin(request, env);
   const { id, status } = await request.json();
-  if (!['approved', 'rejected', 'pending'].includes(status)) throw new Error('bad status');
+  // 'verified' = signed in by email or GakuNin RDM but not an LDAS member; lets an admin undo a stop.
+  if (!['approved', 'verified', 'rejected', 'pending'].includes(status)) throw new Error('bad status');
   await db(env).prepare('UPDATE users SET status = ?, approved_by = ?, approved_at = ? WHERE id = ?')
     .bind(status, admin.orcid, Date.now(), id).run();
   return jsonApi({ type: 'user', id, attributes: { status } });

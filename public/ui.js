@@ -144,6 +144,8 @@ const STRINGS = {
     'admin.only': '管理者だけが見られるページです。',
     'admin.pending': '確認待ち', 'admin.approved': '利用できる', 'admin.rejected': '止めている',
     'admin.approve': '利用を認める', 'admin.reject': '止める',
+    'admin.verified': 'ログインのみ（会員ではない）', 'admin.verify': 'ログインのみに戻す',
+    'admin.via': 'ログイン方法: {0}', 'admin.via.orcid': 'ORCID', 'admin.via.grdm': 'GakuNin RDM', 'admin.via.email': 'メール',
   },
   en: {
     'switch.lang': '日本語',
@@ -287,6 +289,8 @@ const STRINGS = {
     'admin.only': 'Only administrators can see this page.',
     'admin.pending': 'Waiting', 'admin.approved': 'Allowed', 'admin.rejected': 'Stopped',
     'admin.approve': 'Allow', 'admin.reject': 'Stop',
+    'admin.verified': 'Signed in only (not a member)', 'admin.verify': 'Back to signed in only',
+    'admin.via': 'Signs in with: {0}', 'admin.via.orcid': 'ORCID', 'admin.via.grdm': 'GakuNin RDM', 'admin.via.email': 'email',
   },
 };
 

@@ -50,10 +50,15 @@ async function load() {
       who.append(document.createElement('br'), [u.affiliation, u.email_domain ? `(${u.email_domain})` : ''].filter(Boolean).join(' '));
     }
     if (u.wallet) who.append(document.createElement('br'), u.wallet);
+    const via = (u.sign_in || []).map((m) => t(`admin.via.${m}`)).join(' / ');
+    if (via) who.append(document.createElement('br'), t('admin.via', via));
     const st = document.createElement('td');
     st.textContent = t(`admin.${u.status}`);
     const act = document.createElement('td');
-    for (const [status, text] of [['approved', t('admin.approve')], ['rejected', t('admin.reject')]]) {
+    // People without ORCID can be put back to "signed in, not a member" after a stop.
+    const choices = [['approved', t('admin.approve')], ['rejected', t('admin.reject')]];
+    if (!u.orcid) choices.splice(1, 0, ['verified', t('admin.verify')]);
+    for (const [status, text] of choices) {
       if (u.status === status) continue;
       const b = Object.assign(document.createElement('button'), { textContent: text, className: status === 'rejected' ? 'secondary' : '' });
       b.onclick = async () => {
