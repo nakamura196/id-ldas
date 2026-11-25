@@ -728,7 +728,9 @@ function isLocalHost(url) {
 const MAIL_PER_IP_PER_HOUR = 5;
 const MAIL_PER_DAY = 80;
 
-async function allowMail(request, env) {
+async function allowMail(request, url, env) {
+  // Local development (wrangler dev, e2e tests) sends no real mail, so it is not limited.
+  if (isLocalHost(url)) return null;
   const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
   if (!(await hitLimit(env, `mail:ip:${await sha256Hex(ip)}`, MAIL_PER_IP_PER_HOUR, 3600 * 1000))) {
     return jsonApiError('確認コードの送信が多すぎます。1 時間ほどしてからお試しください', 429);
@@ -801,7 +803,7 @@ async function emailChallenge(request, url, env) {
   if (recent && now - Number(recent.created_at) < EMAIL_COOLDOWN_MS) {
     return jsonApiError('確認コードの再送信は 60 秒お待ちください', 429);
   }
-  const limited = await allowMail(request, env);
+  const limited = await allowMail(request, url, env);
   if (limited) return limited;
 
   const rand = new Uint32Array(1);
@@ -925,7 +927,7 @@ async function emailLoginStart(request, url, env) {
   if (recent && now - Number(recent.created_at) < EMAIL_COOLDOWN_MS) {
     return jsonApiError('確認コードの再送信は 60 秒お待ちください', 429);
   }
-  const limited = await allowMail(request, env);
+  const limited = await allowMail(request, url, env);
   if (limited) return limited;
 
   const rand = new Uint32Array(1);
