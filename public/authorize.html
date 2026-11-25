@@ -11,7 +11,6 @@
 <main class="auth-page">
   <div class="card">
     <div class="card-header">
-      <div class="card-badge">LDAS ID</div>
       <h1 data-i18n="authz.title"></h1>
       <p class="lead" data-i18n="authz.lead"></p>
     </div>
@@ -22,11 +21,11 @@
     </section>
 
     <section id="consentBox" hidden>
-      <div class="target-pill">
+      <div class="target-box">
         <span id="targetOrigin"></span>
       </div>
 
-      <p style="font-size:13.5px; color:var(--muted); margin:0 0 8px;" data-i18n="authz.requestText"></p>
+      <p class="hint" style="margin:0 0 8px;" data-i18n="authz.requestText"></p>
 
       <div class="claim-list">
         <label class="claim-row" id="rowName">
@@ -35,7 +34,7 @@
             <span class="claim-label" data-i18n="authz.claimName"></span>
             <span class="claim-value" id="cName"></span>
           </span>
-          <span class="pill pill-opt" id="reqName"></span>
+          <span class="tag tag-opt" id="reqName"></span>
         </label>
 
         <label class="claim-row" id="rowOrcid">
@@ -44,7 +43,7 @@
             <span class="claim-label">ORCID iD</span>
             <span class="claim-value" id="cOrcid"></span>
           </span>
-          <span class="pill pill-opt" id="reqOrcid"></span>
+          <span class="tag tag-opt" id="reqOrcid"></span>
         </label>
 
         <label class="claim-row" id="rowMember">
@@ -53,7 +52,7 @@
             <span class="claim-label" data-i18n="authz.claimMember"></span>
             <span class="claim-value">LDAS</span>
           </span>
-          <span class="pill pill-opt" id="reqMember"></span>
+          <span class="tag tag-opt" id="reqMember"></span>
         </label>
 
         <label class="claim-row" id="rowAffiliation">
@@ -62,7 +61,7 @@
             <span class="claim-label" data-i18n="authz.claimAffiliation"></span>
             <span class="claim-value" id="cAffiliation"></span>
           </span>
-          <span class="pill pill-opt" id="reqAffiliation"></span>
+          <span class="tag tag-opt" id="reqAffiliation"></span>
         </label>
 
         <label class="claim-row" id="rowEmailDomain">
@@ -71,7 +70,7 @@
             <span class="claim-label" data-i18n="authz.claimEmailDomain"></span>
             <span class="claim-value" id="cEmailDomain"></span>
           </span>
-          <span class="pill pill-opt" id="reqEmailDomain"></span>
+          <span class="tag tag-opt" id="reqEmailDomain"></span>
         </label>
 
         <label class="claim-row" id="rowWallet">
@@ -80,7 +79,7 @@
             <span class="claim-label" data-i18n="home.wallet"></span>
             <span class="claim-value" id="cWallet"></span>
           </span>
-          <span class="pill pill-opt" id="reqWallet"></span>
+          <span class="tag tag-opt" id="reqWallet"></span>
         </label>
       </div>
 
@@ -88,7 +87,7 @@
 
       <div class="action-bar">
         <button id="approveBtn" class="full" data-i18n="authz.approve"></button>
-        <div class="action-row" style="justify-content:space-between;">
+        <div class="action-row">
           <button id="switchBtn" class="secondary small" data-i18n="authz.switchAccount"></button>
           <button id="cancelBtn" class="secondary small" data-i18n="authz.cancel"></button>
         </div>
@@ -147,10 +146,18 @@ function toB64Url(bytes) {
   return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 }
 
-async function signKeyBindingJwt(sdJwtWithoutKb, privateKey, { aud, nonce }) {
+// RFC 7638 JWK thumbprint of an EC public key: a stable name for the holder key.
+async function jwkThumbprint(jwk) {
+  const canonical = JSON.stringify({ crv: jwk.crv, kty: jwk.kty, x: jwk.x, y: jwk.y });
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(canonical));
+  return toB64Url(new Uint8Array(digest));
+}
+
+async function signKeyBindingJwt(sdJwtWithoutKb, privateKey, { aud, nonce, kid }) {
   const sdHashBuf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(sdJwtWithoutKb));
   const sd_hash = toB64Url(new Uint8Array(sdHashBuf));
-  const header = toB64Url(new TextEncoder().encode(JSON.stringify({ alg: 'ES256', typ: 'kb+jwt' })));
+  // kid matches cnf.jwk.kid in the credential, so verifiers that look the holder key up by kid find it.
+  const header = toB64Url(new TextEncoder().encode(JSON.stringify({ alg: 'ES256', typ: 'kb+jwt', kid })));
   const payload = toB64Url(
     new TextEncoder().encode(
       JSON.stringify({
@@ -242,7 +249,7 @@ function render() {
     const isReq = requiredClaims.has(key);
     const badge = $(reqId);
     badge.textContent = isReq ? t('authz.required') : t('authz.optional');
-    badge.className = isReq ? 'pill pill-req' : 'pill pill-opt';
+    badge.className = isReq ? 'tag tag-req' : 'tag tag-opt';
     $(rowId).classList.toggle('is-required', isReq);
 
     const missing =
@@ -287,7 +294,8 @@ $('approveBtn').onclick = async () => {
       ['sign', 'verify'],
     );
     const holderPubJwk = await crypto.subtle.exportKey('jwk', holderKeys.publicKey);
-    const cnfJwk = { kty: holderPubJwk.kty, crv: holderPubJwk.crv, x: holderPubJwk.x, y: holderPubJwk.y };
+    const holderKid = await jwkThumbprint(holderPubJwk);
+    const cnfJwk = { kty: holderPubJwk.kty, crv: holderPubJwk.crv, x: holderPubJwk.x, y: holderPubJwk.y, kid: holderKid };
     const audience = reqClientId || targetUrl.origin;
 
     const res = await post('/api/credential', {
@@ -301,6 +309,7 @@ $('approveBtn').onclick = async () => {
     const kbJwt = await signKeyBindingJwt(sdJwtBase, holderKeys.privateKey, {
       aud: audience,
       nonce: reqNonce || undefined,
+      kid: holderKid,
     });
     const fullSdJwt = `${sdJwtBase}${kbJwt}`;
 

@@ -1,0 +1,35 @@
+<section id="after" class="has-note">
+<div class="split">
+<div class="code">
+<p class="ln">{</p>
+<p class="ln i1">"iss": "did:web:id.ldas.jp",</p>
+<p class="ln i1">"vct": "https://id.ldas.jp/credentials/member/v1",</p>
+<p class="ln i1">"iat": 1795546337, "exp": 1798138337,</p>
+<p class="ln i1 hl-new">"sub": "did:pkh:eip155:11155111:0x(伏せ字)",</p>
+<p class="ln i1 hl-new">"status": { "status_list": {</p>
+<p class="ln i2 hl-new">"idx": 2, "uri": "https://id.ldas.jp/status/token/1" } },</p>
+<p class="ln i1 hl-new">"ldas_verification": {</p>
+<p class="ln i2">"method": "ORCID sign-in only …",</p>
+<p class="ln i2">"affiliationVerification": "GakuNin RDM (OAuth2) …",</p>
+<p class="ln i2">"checkedAt": "2026-10-02T20:34:08Z" },</p>
+<p class="ln i1 hl-new">"orcid": "https://orcid.org/0000-0001-8245-7925",</p>
+<p class="ln i1 hl-new">"name": "Satoru Nakamura",</p>
+<p class="ln i1 hl-new">"memberOf": "LDAS",</p>
+<p class="ln i1 hl-new">"wallet": "0x(伏せ字)",</p>
+<p class="ln i1 hl-new">"affiliation": "The University of Tokyo",</p>
+<p class="ln i1 hl-new">"emailDomain": "u-tokyo.ac.jp"</p>
+<p class="ln">}</p>
+</div>
+<div class="side">
+<p class="tag-new">After：直したあと</p>
+<h2>typ（形式の宣言）も<br>中身も IETF 式</h2>
+<p class="pt">項目は箱から出て、一段目に並ぶ。</p>
+<p class="pt">本人を指す ID は、IETF の決まりにある <b>sub</b> に移る。</p>
+<p class="pt-new">失効の場所は IETF 式の <b>status</b> に書く。番号 2 はそのまま。</p>
+<p class="pt">「確認した方法」は名前を変えて残す（ldas_verification）。</p>
+<p class="pt">W3C 式にしかない行は無くなる。</p>
+</div>
+</div>
+<p class="note">Before と同じ値を、新しいコードの並べ方で組み立てたもの。2026-11-24 に本番へ反映し、本番の会員証がこの形で出ることを確かめた。</p>
+<aside>有効期限は exp だけになる。中身の情報は before と同じ。</aside>
+</section>

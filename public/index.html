@@ -8,72 +8,56 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main class="home-page">
+<section id="guestBand" class="title-band" hidden>
+  <div class="inner">
+    <h1 data-i18n="home.heroTitle"></h1>
+    <p class="lead" data-i18n="home.lead"></p>
+    <div class="band-actions">
+      <a class="button" href="/login" data-i18n="home.ctaPrimary"></a>
+      <a class="button secondary" href="/verify" data-i18n="home.ctaVerify"></a>
+    </div>
+  </div>
+</section>
+
+<section id="memberBand" class="title-band" hidden>
+  <div class="inner">
+    <h1 data-i18n="home.accountTitle"></h1>
+    <p class="lead" data-i18n="home.accountLead"></p>
+  </div>
+</section>
+
+<main class="wide-page">
   <section id="guest" hidden>
-    <div class="hero">
-      <div class="hero-copy">
-        <span class="hero-badge" data-i18n="home.badge"></span>
-        <h1 data-i18n="home.heroTitle"></h1>
-        <p class="hero-lead" data-i18n="home.lead"></p>
-        <div class="hero-actions">
-          <a class="button" href="/login" data-i18n="home.ctaPrimary"></a>
-          <a class="button secondary" href="/verify" data-i18n="home.ctaVerify"></a>
-        </div>
-        <div class="hero-methods">
-          <span data-i18n="home.methodsLabel"></span>
-          <span class="method-chip">ORCID</span>
-          <span class="method-chip">GakuNin RDM</span>
-          <span class="method-chip" data-i18n="home.methodChipEmail"></span>
-          <span class="method-chip" data-i18n="home.methodChipPasskey"></span>
+    <div class="home-overview">
+      <div>
+        <h2 class="section-heading" data-i18n="home.stepsTitle"></h2>
+        <div class="info-list">
+          <div class="info-list-item">
+            <span class="step-num">1</span>
+            <div>
+              <h3 data-i18n="home.step1Title"></h3>
+              <p data-i18n="home.step1Text"></p>
+            </div>
+          </div>
+          <div class="info-list-item">
+            <span class="step-num">2</span>
+            <div>
+              <h3 data-i18n="home.step2Title"></h3>
+              <p data-i18n="home.step2Text"></p>
+            </div>
+          </div>
+          <div class="info-list-item">
+            <span class="step-num">3</span>
+            <div>
+              <h3 data-i18n="home.step3Title"></h3>
+              <p data-i18n="home.step3Text"></p>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="hero-visual">
+      <div class="home-visual">
         <img src="/hero.jpg" alt="LDAS ID" loading="eager">
       </div>
-    </div>
-
-    <h2 class="section-heading" data-i18n="home.featTitle"></h2>
-    <div class="features-grid">
-      <article class="feature-card">
-        <div class="feature-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
-        </div>
-        <h3 data-i18n="home.feat1Title"></h3>
-        <p data-i18n="home.feat1Text"></p>
-      </article>
-      <article class="feature-card">
-        <div class="feature-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/></svg>
-        </div>
-        <h3 data-i18n="home.feat2Title"></h3>
-        <p data-i18n="home.feat2Text"></p>
-      </article>
-      <article class="feature-card">
-        <div class="feature-icon" aria-hidden="true">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
-        </div>
-        <h3 data-i18n="home.feat3Title"></h3>
-        <p data-i18n="home.feat3Text"></p>
-      </article>
-    </div>
-
-    <h2 class="section-heading" data-i18n="home.stepsTitle"></h2>
-    <div class="steps-grid">
-      <article class="step-card">
-        <span class="step-num">1</span>
-        <h3 data-i18n="home.step1Title"></h3>
-        <p data-i18n="home.step1Text"></p>
-      </article>
-      <article class="step-card">
-        <span class="step-num">2</span>
-        <h3 data-i18n="home.step2Title"></h3>
-        <p data-i18n="home.step2Text"></p>
-      </article>
-      <article class="step-card">
-        <span class="step-num">3</span>
-        <h3 data-i18n="home.step3Title"></h3>
-        <p data-i18n="home.step3Text"></p>
-      </article>
     </div>
 
     <div class="tech-strip">
@@ -91,45 +75,45 @@
   <section id="member" class="member-grid" hidden>
     <div class="member-card">
       <h2><span id="who"></span></h2>
-      <p id="status" style="margin:0 0 8px; color:var(--muted);"></p>
+      <p id="status" class="muted" style="margin:0;"></p>
       <div class="member-meta">
         <p id="orcidRow" hidden>ORCID iD: <a id="orcid" target="_blank" rel="noopener"></a></p>
         <p>
           <span data-i18n="home.affiliation"></span>:
           <strong id="affiliation"></strong>
-          <span id="emailDomain" style="color:var(--muted); font-size:0.9em;"></span>
-          <span id="affilBadge" hidden style="display:inline-block; margin-left:6px; padding:2px 8px; border-radius:999px; font-size:0.78em; font-weight:700; background:#ecfdf5; color:#047857; border:1px solid #a7f3d0;" data-i18n="home.verifiedBadge"></span>
+          <span id="emailDomain" class="muted" style="font-size:0.9em;"></span>
+          <span id="affilBadge" hidden class="verified-tag" data-i18n="home.verifiedBadge"></span>
         </p>
         <p id="walletRow" hidden><span data-i18n="home.wallet"></span>: <code id="wallet"></code></p>
       </div>
     </div>
 
     <div class="member-card">
-      <strong data-i18n="home.affilTitle"></strong>
-      <div id="affilVerifiedCard" hidden style="margin:10px 0 4px; padding:12px 14px; border-radius:10px; background:#ecfdf5; border:1px solid #a7f3d0; color:#065f46; font-size:0.9em;">
-        <div style="font-weight:700;" id="affilVerifiedHeadline"></div>
-        <div style="font-size:0.86em; margin-top:4px; opacity:0.9;" id="affilVerifiedMeta"></div>
-        <button id="toggleAffilForm" type="button" class="secondary small" style="margin-top:8px;" data-i18n="home.reverifyAffil"></button>
+      <h2 class="member-card-title" data-i18n="home.affilTitle"></h2>
+      <div id="affilVerifiedCard" hidden class="verified-box">
+        <div class="verified-box-title" id="affilVerifiedHeadline"></div>
+        <div class="verified-box-meta" id="affilVerifiedMeta"></div>
+        <button id="toggleAffilForm" type="button" class="secondary small" style="margin-top:10px;" data-i18n="home.reverifyAffil"></button>
       </div>
       <div id="affilFormWrap">
-        <p style="margin:8px 0 12px; font-size:0.92em; color:var(--muted);" data-i18n="home.affilDesc"></p>
-        <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-bottom:8px;">
+        <p class="hint" style="margin:0 0 12px;" data-i18n="home.affilDesc"></p>
+        <div class="inline-row" style="margin-bottom:8px;">
           <input id="emailInput" type="email" style="flex:1; min-width:220px;" data-i18n-placeholder="home.emailPlaceholder">
           <button id="sendEmailCode" type="button" class="secondary small" data-i18n="home.sendCode"></button>
           <a id="grdmLink" class="button secondary small" href="/auth/grdm" hidden data-i18n="home.grdmLink"></a>
         </div>
-        <div id="emailVerifyBox" hidden style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:8px;">
+        <div id="emailVerifyBox" hidden class="inline-row" style="margin-top:8px;">
           <input id="codeInput" type="text" inputmode="numeric" maxlength="6" style="width:140px;" data-i18n-placeholder="home.codePlaceholder">
           <button id="verifyEmailCode" type="button" class="small" data-i18n="home.verifyCode"></button>
-          <span id="devCodeHint" style="font-size:0.85em; color:var(--muted);"></span>
+          <span id="devCodeHint" class="hint"></span>
         </div>
         <p id="affilMsg" role="status" style="margin:8px 0 0; font-size:0.88em; font-weight:600;"></p>
       </div>
     </div>
 
     <div class="member-card">
-      <strong data-i18n="home.memberActionsTitle"></strong>
-      <div class="member-actions" style="margin-top:12px;">
+      <h2 class="member-card-title" data-i18n="home.memberActionsTitle"></h2>
+      <div class="member-actions">
         <button id="issue" hidden data-i18n="home.issue"></button>
         <button id="addPasskey" class="secondary" data-i18n="home.addPasskey"></button>
         <button id="revokeSelf" class="danger" data-i18n="home.revokeSelf"></button>
@@ -186,7 +170,9 @@ async function post(path, body) {
 }
 
 function render() {
+  $('guestBand').hidden = !!user;
   $('guest').hidden = !!user;
+  $('memberBand').hidden = !user;
   $('member').hidden = !user;
   adminNav.hidden = !user?.isAdmin;
   if (!user) return;
@@ -239,7 +225,7 @@ $('toggleAffilForm').onclick = () => {
 const setAffilMsg = (text, bad = false) => {
   const el = $('affilMsg');
   el.textContent = text;
-  el.style.color = bad ? '#be123c' : '#047857';
+  el.className = bad ? 'bad' : 'ok';
 };
 
 $('sendEmailCode').onclick = async () => {

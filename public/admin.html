@@ -8,13 +8,19 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<main>
-  <h1 data-i18n="admin.title"></h1>
-  <p class="lead" data-i18n="admin.lead"></p>
-  <table>
-    <thead><tr><th data-i18n="admin.who"></th><th data-i18n="admin.state"></th><th></th></tr></thead>
-    <tbody id="rows"></tbody>
-  </table>
+<section class="title-band">
+  <div class="inner">
+    <h1 data-i18n="admin.title"></h1>
+    <p class="lead" data-i18n="admin.lead"></p>
+  </div>
+</section>
+<main class="wide-page">
+  <div class="table-wrap">
+    <table>
+      <thead><tr><th data-i18n="admin.who"></th><th data-i18n="admin.state"></th><th></th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
   <p id="msg" role="status"></p>
 </main>
 

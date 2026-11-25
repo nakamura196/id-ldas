@@ -8,18 +8,26 @@
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<section class="title-band">
+  <div class="inner">
+    <h1 data-i18n="verify.title"></h1>
+    <p class="lead" data-i18n-html="verify.lead"></p>
+  </div>
+</section>
 <main>
-  <h1 data-i18n="verify.title"></h1>
-  <p class="lead" data-i18n-html="verify.lead"></p>
-  <textarea id="jwt" rows="6" data-i18n-placeholder="verify.placeholder"></textarea>
-  <button id="go" data-i18n="verify.go"></button>
-  <ol id="steps"></ol>
-  <section id="holder" hidden>
-    <h2 data-i18n="verify.holderTitle"></h2>
-    <p data-i18n-html="verify.holderText"></p>
-    <button id="challenge" data-i18n="verify.challenge"></button>
-    <p id="holderResult"></p>
-  </section>
+  <div class="panel">
+    <textarea id="jwt" rows="6" data-i18n-placeholder="verify.placeholder"></textarea>
+    <div style="margin-top:10px;">
+      <button id="go" data-i18n="verify.go"></button>
+    </div>
+    <ol id="steps"></ol>
+    <section id="holder" hidden style="margin-top:20px; padding-top:16px; border-top:1px solid var(--line);">
+      <h2 style="margin-top:0;" data-i18n="verify.holderTitle"></h2>
+      <p data-i18n-html="verify.holderText"></p>
+      <button id="challenge" data-i18n="verify.challenge"></button>
+      <p id="holderResult"></p>
+    </section>
+  </div>
 </main>
 
 <script type="module">

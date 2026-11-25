@@ -62,6 +62,7 @@ async function route(request, env) {
     try {
       if (url.pathname === '/.well-known/did.json') return await didDocument(url, env);
       if (url.pathname === '/status/1') return await statusListCredential(url, env);
+      if (url.pathname === '/status/token/1') return await tokenStatusList(url, env);
       if (url.pathname === '/auth/orcid') return await orcidStart(url, env);
       if (url.pathname === '/auth/orcid/callback') return await orcidCallback(request, url, env);
       if (url.pathname === '/auth/grdm') return await grdmStart(request, url, env);
@@ -401,15 +402,53 @@ async function encodeBitstring(revokedIndices) {
   return `u${b64url}`; // multibase base64url (no padding)
 }
 
-async function statusListCredential(url, env) {
-  const did = didFor(url);
-  const { privateKey } = await issuerKey(url, env);
+async function revokedStatusIndices(env) {
   const rejectedRows = await db(env).prepare("SELECT status_index FROM users WHERE status = 'rejected' AND status_index IS NOT NULL").all();
   const selfRevokedRows = await db(env).prepare('SELECT idx FROM revoked_indices').all();
-  const revokedIndices = [
+  return [
     ...rejectedRows.map((r) => Number(r.status_index)),
     ...selfRevokedRows.map((r) => Number(r.idx)),
   ];
+}
+
+// IETF Token Status List (draft-ietf-oauth-status-list), used by the SD-JWT VC.
+// Same indices as the W3C list at /status/1, but a different encoding: 1 bit per entry,
+// counted from the least significant bit of each byte, ZLIB-compressed, base64url without "u".
+const TOKEN_STATUS_TTL_SECONDS = 300;
+
+async function tokenStatusList(url, env) {
+  const did = didFor(url);
+  const { privateKey } = await issuerKey(url, env);
+  const bytes = new Uint8Array(STATUS_LIST_BYTES);
+  for (const idx of await revokedStatusIndices(env)) {
+    if (idx >= 0 && idx < STATUS_LIST_BYTES * 8) bytes[idx >> 3] |= 1 << (idx & 7);
+  }
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'));
+  const lst = uint8ArrayToBase64Url(new Uint8Array(await new Response(stream).arrayBuffer()));
+  const now = Math.floor(Date.now() / 1000);
+  const jwt = await new SignJWT({
+    sub: `${url.origin}/status/token/1`,
+    iat: now,
+    exp: now + 86400,
+    ttl: TOKEN_STATUS_TTL_SECONDS,
+    status_list: { bits: 1, lst },
+  })
+    .setProtectedHeader({ alg: 'EdDSA', typ: 'statuslist+jwt', kid: `${did}#key-1` })
+    .sign(privateKey);
+  return new Response(jwt, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/statuslist+jwt',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': `public, max-age=${TOKEN_STATUS_TTL_SECONDS}`,
+    },
+  });
+}
+
+async function statusListCredential(url, env) {
+  const did = didFor(url);
+  const { privateKey } = await issuerKey(url, env);
+  const revokedIndices = await revokedStatusIndices(env);
   const encodedList = await encodeBitstring(revokedIndices);
   const now = new Date();
   const statusCred = {
@@ -531,6 +570,8 @@ async function issueCredential(request, url, env) {
           ...(rawCnf.crv ? { crv: rawCnf.crv } : {}),
           ...(rawCnf.x ? { x: rawCnf.x } : {}),
           ...(rawCnf.y ? { y: rawCnf.y } : {}),
+          // The holder's kb+jwt names its key with this kid; some verifiers (walt.id) look the key up by it.
+          ...(typeof rawCnf.kid === 'string' && rawCnf.kid.length <= 128 ? { kid: rawCnf.kid } : {}),
         }
       : undefined;
   const ALL_SD_KEYS = ['name', 'orcid', 'memberOf', 'wallet', 'affiliation', 'emailDomain'];
@@ -548,7 +589,6 @@ async function issueCredential(request, url, env) {
   const credential = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', 'LdasMemberCredential'],
-    ...(format === 'dc+sd-jwt' ? { vct: `${url.origin}/credentials/member/v1` } : {}),
     issuer: did,
     iss: did,
     iat: Math.floor(now.getTime() / 1000),
@@ -598,6 +638,26 @@ async function issueCredential(request, url, env) {
   };
 
   if (format === 'dc+sd-jwt') {
+    // IETF SD-JWT VC: claims sit at the top level (no credentialSubject, no @context),
+    // the subject goes in `sub`, revocation in `status` (IETF Token Status List).
+    // The W3C-shaped `credential` above is kept only for the vc+jwt format.
+    const subjectClaims = { ...credential.credentialSubject };
+    delete subjectClaims.id;
+    const { type: _evidenceType, ...verification } = credential.evidence[0];
+    const sdClaims = {
+      iss: did,
+      iat: credential.iat,
+      exp: credential.exp,
+      vct: `${url.origin}/credentials/member/v1`,
+      sub: credential.credentialSubject.id,
+      ...(cnfJwk ? { cnf: { jwk: cnfJwk } } : {}),
+      ...(!cnfJwk && nonce ? { nonce } : {}),
+      ...(!cnfJwk && aud ? { aud } : {}),
+      status: { status_list: { idx: statusIndex, uri: `${url.origin}/status/token/1` } },
+      // How the issuer checked this person. Not a registered claim, hence the ldas_ prefix.
+      ldas_verification: verification,
+      ...subjectClaims,
+    };
     const sdjwt = new SdJwtInstance({
       signer: async (data) => {
         const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(data));
@@ -617,19 +677,19 @@ async function issueCredential(request, url, env) {
       ...(user.email_domain ? ['emailDomain'] : []),
     ];
     const issued = await sdjwt.issue(
-      credential,
-      { credentialSubject: { _sd: sdKeys } },
+      sdClaims,
+      { _sd: sdKeys },
       { header: { typ: 'dc+sd-jwt', kid: `${did}#key-1` } },
     );
-    const presentFrame = { credentialSubject: {} };
+    const presentFrame = {};
     for (const k of sdKeys) {
-      if (requestedDisclose.includes(k)) presentFrame.credentialSubject[k] = true;
+      if (requestedDisclose.includes(k)) presentFrame[k] = true;
     }
     const presentation = await sdjwt.present(issued, presentFrame);
     return jsonApi({
       type: 'credential',
       id: String(statusIndex),
-      attributes: { jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential },
+      attributes: { jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential: sdClaims },
     });
   }
 
