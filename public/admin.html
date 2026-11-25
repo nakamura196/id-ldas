@@ -47,7 +47,7 @@ async function load() {
       const a = Object.assign(document.createElement('a'), { href: `https://orcid.org/${u.orcid}`, target: '_blank', rel: 'noopener', textContent: u.orcid });
       who.append(document.createElement('br'), a);
     } else if (u.affiliation || u.email_domain) {
-      who.append(document.createElement('br'), [u.affiliation, u.email_domain ? `(${u.email_domain})` : ''].filter(Boolean).join(' '));
+      who.append(document.createElement('br'), [u.affiliation, u.email_domain && u.email_domain !== u.affiliation ? `(${u.email_domain})` : ''].filter(Boolean).join(' '));
     }
     if (u.wallet) who.append(document.createElement('br'), u.wallet);
     const via = (u.sign_in || []).map((m) => t(`admin.via.${m}`)).join(' / ');
