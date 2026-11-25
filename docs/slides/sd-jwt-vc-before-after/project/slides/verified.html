@@ -1,0 +1,11 @@
+<section id="verified" class="alt">
+<p class="eyebrow">確かめたこと</p>
+<h2>手元では通しで動いた。本番はこれから</h2>
+<div class="steps">
+<div class="step"><p class="sn">1</p><p class="st">dataspace・pay の検証のテスト 26 件がすべて通った。新しい形の試験を 1 件足した（有効なら通る、取り消し済みなら弾く、他所の失効リストは受け付けない）。</p></div>
+<div class="step"><p class="sn">2</p><p class="st">手元で id.ldas.jp を動かし、会員証を発行して、dataspace の検証に通した。本人が取り消したあとは「失効済み」で弾かれた。</p></div>
+<div class="step"><p class="sn">3</p><p class="st">walt.id では、直す前の形で 3 つの問題を実測した（名札が無い、失効が飛ばされる、失効リストの形が違う）。</p></div>
+</div>
+<div class="warn"><p>出す順番：dataspace・pay → Clio-X の扱いを決める → id.ldas.jp。<br>Clio-X は古い箱の中しか見ないので、id.ldas.jp を先に出すと Clio-X のログインが落ちる。</p></div>
+<aside>walt.id の 1.2.0 は OID4VP の正式版より前の作り。渡し方の違いは向こうが古いためなので、こちらは直さない。</aside>
+</section>

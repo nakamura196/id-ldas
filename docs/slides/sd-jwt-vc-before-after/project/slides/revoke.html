@@ -1,0 +1,28 @@
+<section id="revoke" class="has-note">
+<p class="eyebrow">変わる仕組み 1</p>
+<h2>失効：before では、他所の検証で取り消しが効かなかった</h2>
+<div style="display:flex; flex-direction:column; gap:56px; margin-top:24px;">
+<div class="flow">
+<p class="rowlabel-old">Before</p>
+<div class="fbox"><p>検証する側が、IETF 式の status 欄を探す</p></div>
+<x-connector></x-connector>
+<div class="fbox"><p>見つからない（W3C 式の名前で書いてある）</p></div>
+<x-connector></x-connector>
+<div class="fbox"><p>エラーにならず、失効の確認を飛ばす</p></div>
+<x-connector></x-connector>
+<div class="fbox-bad"><p>取り消した会員証でも通ってしまう</p></div>
+</div>
+<div class="flow">
+<p class="rowlabel-new">After</p>
+<div class="fbox"><p>status 欄を見つける（idx 2）</p></div>
+<x-connector></x-connector>
+<div class="fbox"><p>/status/token/1 を取りに行き、発行元の署名を確かめる</p></div>
+<x-connector></x-connector>
+<div class="fbox"><p>リストの 2 番目のビットを読む</p></div>
+<x-connector></x-connector>
+<div class="fbox-good"><p>0 なら有効、1 なら拒否する</p></div>
+</div>
+</div>
+<p class="note">walt.id の検証サーバ（1.2.0）で、同じ形の会員証を使って実測した。</p>
+<aside>いちばん大きな問題はここ。失敗ではなく「確認を飛ばす」なので、気づきにくい。</aside>
+</section>

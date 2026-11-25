@@ -4,35 +4,26 @@
 const STRINGS = {
   ja: {
     'switch.lang': 'English',
-    'nav.home': 'ホーム', 'nav.verify': 'VC を検証', 'nav.admin': '管理',
+    'nav.home': 'ホーム', 'nav.verify': 'VC を検証', 'nav.admin': '管理', 'nav.menu': 'メニュー', 'nav.close': '閉じる',
     'footer.about': '練習用の ID サーバです。DID / VC とパスキー、ORCID・GakuNin RDM・メール認証、ウォレットの結びつけを試すために作りました。',
     'footer.did': 'このサーバの DID 文書（公開鍵）',
     'footer.by': '運営: 中村 覚',
     'theme.auto': '表示: 自動', 'theme.light': '表示: ライト', 'theme.dark': '表示: ダーク',
 
-    'home.badge': 'LDAS ID — デジタル会員証',
-    'home.heroTitle': 'あなたの本人確認と所属を、ひとつのデジタル会員証に。',
-    'home.lead': 'ORCID・GakuNin RDM（学認）・メールアドレスのいずれかでサインインして、連携先のデータスペースやアプリで使えるデジタル会員証を受け取れます。相手に見せる情報は、毎回自分で選べます。',
+    'home.heroTitle': 'LDAS ID — デジタル会員証',
+    'home.lead': 'ORCID・GakuNin RDM・メールアドレスでサインインし、連携先のデータスペースやアプリで使えるデジタル会員証（VC）を発行・管理できます。',
     'home.ctaPrimary': 'サインインしてはじめる',
     'home.ctaVerify': '証明書を検証する',
-    'home.methodsLabel': '対応ログイン:',
-    'home.methodChipEmail': 'メールアドレス（6 桁コード）',
-    'home.methodChipPasskey': 'パスキー',
-    'home.featTitle': '安心して使える 3 つの特徴',
-    'home.feat1Title': 'いつもの方法でサインイン',
-    'home.feat1Text': 'ORCID・大学アカウント（GakuNin RDM）・メールアドレスの 3 方式に対応。メールアドレス本体はサーバに保存しません。',
-    'home.feat2Title': '見せる情報を自分で選べる',
-    'home.feat2Text': '連携先のアプリに渡す項目（氏名・所属機関など）を、毎回チェックボックスで選んでから許可できます。',
-    'home.feat3Title': 'すぐ再ログイン・すぐ停止',
-    'home.feat3Text': '指紋・顔認証（パスキー）での素早い再ログインや、万一のときの会員証の即時無効化にも対応しています。',
     'home.stepsTitle': '使いかた（3 ステップ）',
     'home.step1Title': 'サインインする',
-    'home.step1Text': 'ORCID・GakuNin RDM・メールアドレスのいずれかでログインします。登録手続きはすぐ終わります。',
+    'home.step1Text': 'ORCID・GakuNin RDM・メールアドレス（6 桁コード）のいずれかでログインします。生メールアドレスはサーバに保存しません。',
     'home.step2Title': '必要に応じて所属を確認',
     'home.step2Text': '大学や機関の特典を使う場合は、所属メールの確認コードまたは GakuNin RDM で所属を証明できます。',
     'home.step3Title': '連携先アプリで使う',
-    'home.step3Text': 'データスペースなどの対応アプリからログインすると、渡す情報を確認したうえで会員証を提示できます。',
-    'home.techNote': '開発者・技術仕様向け（W3C VC / SD-JWT / OID4VP / OpenAPI 3.1）',
+    'home.step3Text': '対応アプリからログインすると、渡す項目（氏名・所属機関など）を毎回選んでから会員証を提示できます。',
+    'home.techNote': '開発者・技術仕様（W3C VC / SD-JWT / OID4VP / OpenAPI 3.1）',
+    'home.accountTitle': 'アカウント管理',
+    'home.accountLead': '所属の確認、会員証（VC）の発行・失効、パスキーの追加を行えます。',
     'home.memberActionsTitle': '会員証（VC）とアカウント設定',
     'home.walletOptionalSummary': 'Web3 ウォレットを結びつける（Clio-X など対応アプリを使う方のみ・任意）',
     'home.new': 'はじめての方',
@@ -82,8 +73,8 @@ const STRINGS = {
     'home.returnInvalid': '指定された戻り先 URL（return_to）は許可対象外のため無視しました。',
     'home.returnLoginHint': '連携先 {0} へ戻るには、まず ORCID・GakuNin RDM・メールアドレス、またはパスキーでログインしてください。',
 
-    'login.title': 'LDAS ID にサインイン（認証）',
-    'login.lead': 'ORCID・GakuNin RDM（学認）・メールアドレス（確認コード）、または登録済みのパスキーで本人確認を行います。',
+    'login.title': 'LDAS ID にサインイン',
+    'login.lead': 'ORCID・GakuNin RDM・メールアドレス、またはパスキーでサインインします。',
     'login.nextHint': 'サインインが完了すると、続けて連携先アプリへの認可画面に進みます。',
 
     'authz.title': 'このアプリに情報を渡しますか？',
@@ -101,6 +92,7 @@ const STRINGS = {
     'authz.cancel': 'キャンセル',
     'authz.switchAccount': '別のアカウントを使う',
     'authz.missingReturn': '戻り先 URL（return_to）が指定されていません。連携先アプリのログインボタンから開いてください。',
+    'authz.clientMismatch': '依頼元（client_id）と戻り先（redirect_uri）が一致しないため、中止しました。連携先アプリの管理者にお知らせください。',
     'status.pending': '確認待ちです。',
     'status.approved': '会員証を発行できます。',
     'status.verified': '本人確認済みです。会員証を発行できます。',
@@ -155,35 +147,26 @@ const STRINGS = {
   },
   en: {
     'switch.lang': '日本語',
-    'nav.home': 'Home', 'nav.verify': 'Verify a VC', 'nav.admin': 'Admin',
+    'nav.home': 'Home', 'nav.verify': 'Verify a VC', 'nav.admin': 'Admin', 'nav.menu': 'Menu', 'nav.close': 'Close',
     'footer.about': 'A practice ID server for trying DID / VC with passkeys, ORCID / GakuNin RDM / email sign-in, and wallet binding.',
     'footer.did': "This server's DID document (public key)",
     'footer.by': 'Run by Satoru Nakamura',
     'theme.auto': 'Theme: auto', 'theme.light': 'Theme: light', 'theme.dark': 'Theme: dark',
 
-    'home.badge': 'LDAS ID — Digital Membership',
-    'home.heroTitle': 'Your identity and affiliation, in one digital membership card.',
-    'home.lead': 'Sign in with ORCID, GakuNin RDM, or an email address to receive a verifiable digital membership card for connected data spaces and apps. You choose which details to share every time.',
+    'home.heroTitle': 'LDAS ID — Digital Membership',
+    'home.lead': 'Sign in with ORCID, GakuNin RDM, or an email address to issue and manage a verifiable membership credential for connected data spaces and apps.',
     'home.ctaPrimary': 'Sign in to get started',
     'home.ctaVerify': 'Verify a credential',
-    'home.methodsLabel': 'Sign in with:',
-    'home.methodChipEmail': 'Email (6-digit code)',
-    'home.methodChipPasskey': 'Passkey',
-    'home.featTitle': 'Three ways LDAS ID keeps it simple & private',
-    'home.feat1Title': 'Sign in your way',
-    'home.feat1Text': 'Use ORCID, GakuNin RDM, or an email address. Your raw email address is never stored on the server.',
-    'home.feat2Title': 'You choose what to share',
-    'home.feat2Text': 'Pick exactly which items—such as your name or verified affiliation—to share with each connected app.',
-    'home.feat3Title': 'Fast sign-in & instant revoke',
-    'home.feat3Text': 'Add a passkey (fingerprint or face) for quick return visits, and revoke issued credentials at any time.',
-    'home.stepsTitle': 'How it works in 3 steps',
+    'home.stepsTitle': 'How it works (3 steps)',
     'home.step1Title': 'Sign in',
-    'home.step1Text': 'Log in with ORCID, GakuNin RDM, or an email verification code. Setup takes less than a minute.',
+    'home.step1Text': 'Log in with ORCID, GakuNin RDM, or an email verification code. Your raw email address is never stored on the server.',
     'home.step2Title': 'Verify your affiliation (optional)',
     'home.step2Text': 'Confirm your university or organization via institutional email or GakuNin RDM to unlock institutional access.',
     'home.step3Title': 'Use with connected apps',
-    'home.step3Text': 'When signing in to a connected data space or app, review the requested items and approve with one click.',
+    'home.step3Text': 'When signing in to a connected app, choose which items (name, affiliation, etc.) to share before approving.',
     'home.techNote': 'For developers & specs (W3C VC / SD-JWT / OID4VP / OpenAPI 3.1)',
+    'home.accountTitle': 'Account management',
+    'home.accountLead': 'Verify your affiliation, issue or revoke credentials (VC), and manage passkeys.',
     'home.memberActionsTitle': 'Credential (VC) & account settings',
     'home.walletOptionalSummary': 'Link a Web3 wallet (optional — only needed for apps like Clio-X)',
     'home.new': 'New here',
@@ -233,8 +216,8 @@ const STRINGS = {
     'home.returnInvalid': 'Ignored the requested return_to URL because its origin is not allowed.',
     'home.returnLoginHint': 'Sign in with ORCID, GakuNin RDM, email, or a passkey to issue a VC and return to {0}.',
 
-    'login.title': 'Sign in to LDAS ID (Authentication)',
-    'login.lead': 'Verify your identity with ORCID, GakuNin RDM, an email verification code, or a registered passkey.',
+    'login.title': 'Sign in to LDAS ID',
+    'login.lead': 'Sign in with ORCID, GakuNin RDM, an email code, or a registered passkey.',
     'login.nextHint': 'After signing in, you will continue to the app authorization screen.',
 
     'authz.title': 'Share your info with this app?',
@@ -252,6 +235,7 @@ const STRINGS = {
     'authz.cancel': 'Cancel',
     'authz.switchAccount': 'Use another account',
     'authz.missingReturn': 'Missing return_to URL. Open this page from the sign-in button of the requesting app.',
+    'authz.clientMismatch': 'Stopped: the requesting app (client_id) does not match where the credential would be sent (redirect_uri). Please tell the app\'s administrator.',
     'status.pending': 'Waiting for review.',
     'status.approved': 'You can issue a credential.',
     'status.verified': 'Identity verified. You can issue a credential.',
@@ -326,6 +310,7 @@ function apply() {
   for (const el of document.querySelectorAll('[data-i18n-placeholder]')) el.placeholder = t(el.dataset.i18nPlaceholder);
   langBtn.textContent = t('switch.lang');
   themeBtn.textContent = t(`theme.${theme}`);
+  updateMenuLabel();
   listeners.forEach((fn) => fn());
 }
 
@@ -349,11 +334,37 @@ themeBtn.onclick = () => { theme = THEMES[(THEMES.indexOf(theme) + 1) % 3]; writ
 
 export const adminNav = navLink('/admin', 'nav.admin');
 adminNav.hidden = location.pathname !== '/admin';
-document.body.prepend(el('header', { className: 'site' },
+
+const menuBtn = el('button', { type: 'button', className: 'menu-toggle' });
+menuBtn.setAttribute('aria-expanded', 'false');
+menuBtn.setAttribute('aria-controls', 'site-nav-panel');
+const navPanel = el('div', { id: 'site-nav-panel', className: 'nav-panel' },
+  el('nav', {}, navLink('/', 'nav.home'), navLink('/verify', 'nav.verify'), adminNav),
+  el('div', { className: 'switches' }, langBtn, themeBtn));
+const siteHeader = el('header', { className: 'site' },
   el('div', { className: 'inner' },
     el('a', { href: '/', className: 'brand', textContent: 'LDAS ID' }),
-    el('nav', {}, navLink('/', 'nav.home'), navLink('/verify', 'nav.verify'), adminNav),
-    el('div', { className: 'switches' }, langBtn, themeBtn))));
+    menuBtn,
+    navPanel));
+
+function updateMenuLabel() {
+  const open = siteHeader.classList.contains('is-open');
+  menuBtn.textContent = open ? `✕ ${t('nav.close')}` : `☰ ${t('nav.menu')}`;
+  menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function closeMenu() {
+  if (!siteHeader.classList.contains('is-open')) return;
+  siteHeader.classList.remove('is-open');
+  updateMenuLabel();
+}
+menuBtn.onclick = () => {
+  siteHeader.classList.toggle('is-open');
+  updateMenuLabel();
+};
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+document.addEventListener('click', (e) => { if (!siteHeader.contains(e.target)) closeMenu(); });
+
+document.body.prepend(siteHeader);
 
 const about = el('p'); about.dataset.i18n = 'footer.about';
 const did = el('a', { href: '/.well-known/did.json' }); did.dataset.i18n = 'footer.did';

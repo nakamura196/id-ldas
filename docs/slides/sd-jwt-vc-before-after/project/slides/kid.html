@@ -1,0 +1,26 @@
+<section id="kid" class="alt has-note">
+<p class="eyebrow">変わる仕組み 2</p>
+<h2>本人の署名に、鍵の名札を付ける</h2>
+<div style="display:flex; align-items:center; gap:0; margin-top:16px;">
+<div class="code" style="width:660px;">
+<p class="ln dim">会員証の中（発行元が署名）</p>
+<p class="ln">"cnf": { "jwk": {</p>
+<p class="ln i1">"kty": "EC", "crv": "P-256",</p>
+<p class="ln i1">"x": "…", "y": "…",</p>
+<p class="ln i1 hl-new">"kid": "g_SYTt…" } }</p>
+</div>
+<x-connector style="width:200px; color:#1D5A9E; border-width:4px;" head="both"></x-connector>
+<div class="code" style="width:660px;">
+<p class="ln dim">本人の署名（kb+jwt）の見出し</p>
+<p class="ln">{ "alg": "ES256",</p>
+<p class="ln i1">"typ": "kb+jwt",</p>
+<p class="ln i1 hl-new">"kid": "g_SYTt…" }</p>
+</div>
+</div>
+<div class="cards">
+<div class="card"><h3 style="color:#A8481A;">Before</h3><p class="body">どちらにも名札が無い。walt.id は「鍵の名前が見つからない」で最初の確認から止まった。</p></div>
+<div class="card"><h3 style="color:#1D5A9E;">After</h3><p class="body">両方に同じ名札を入れる。名札は、本人の鍵そのものから計算した指紋（JWK thumbprint）。</p></div>
+</div>
+<p class="note">名札の値は手元の試験で作った例。本人の鍵はブラウザの中で作られ、外に出ない。</p>
+<aside>本人の署名は、ログインのたびにブラウザが作る。会員証の写しだけでは通らないようにするための仕組み。</aside>
+</section>

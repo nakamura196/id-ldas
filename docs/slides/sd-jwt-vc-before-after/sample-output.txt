@@ -1,0 +1,48 @@
+header {
+  typ: 'dc+sd-jwt',
+  kid: 'did:web:localhost%3A8787#key-1',
+  alg: 'EdDSA'
+}
+payload {
+ "iss": "did:web:localhost%3A8787",
+ "iat": 1795545916,
+ "exp": 1798137916,
+ "vct": "http://localhost:8787/credentials/member/v1",
+ "sub": "urn:ldas:user:507406a5-848e-4610-b555-85fd835549e5",
+ "cnf": {
+  "jwk": {
+   "kty": "EC",
+   "crv": "P-256",
+   "x": "E3pqnDK_ap6Te6Kcc080PuesCAmhil8mzKfwL6-xbB8",
+   "y": "yE5fa1rD2AoB915S7mSQ83J4Qq4SGHQCE_JAm6ryEko",
+   "kid": "g_SYTt-b01iN80sjUyPtV7L9xf80i7PaZPADmRRD1nY"
+  }
+ },
+ "status": {
+  "status_list": {
+   "idx": 3,
+   "uri": "http://localhost:8787/status/token/1"
+  }
+ },
+ "ldas_verification": {
+  "method": "ORCID sign-in only (anyone with an ORCID iD)",
+  "affiliationVerification": "Institutional email domain verified by one-time code (raw email not stored)",
+  "affiliationVerifiedAt": "2026-11-24T18:45:16.671Z",
+  "checkedAt": "2026-11-24T18:45:16.671Z"
+ },
+ "_sd": [
+  "AT62Qn3VjwwuR7rH8qpZFAzO84AFV3bmBdsNd8aLK_Q",
+  "TBC1F8Fm7JcHjuiQRnoOhR9KFlll0NTmk-G5M11XnQo",
+  "dF0t0hwoEzxxNJWs5tO__HTGO6C0S1f6wuhONg4yYeo"
+ ],
+ "_sd_alg": "sha-256"
+}
+ヘッダ確認: format=dc+sd-jwt, alg=EdDSA, kid=did:web:localhost%3A8787#key-1
+発行者 DID 確認: did:web:localhost%3A8787
+DID Document 取得成功: http://localhost:8787/.well-known/did.json
+公開鍵 JWK 確認: did:web:localhost%3A8787#key-1 (JsonWebKey2020)
+SD-JWT (dc+sd-jwt / RFC 9901) Ed25519 署名・選択的開示ハッシュ・有効期限を検証完了
+Key Binding JWT (kb+jwt / ES256) 署名および sd_hash を検証完了
+OID4VP nonce 検証完了: e2e
+IETF Token Status List (statuslist+jwt 署名検証済み) 確認完了: 有効 (http://localhost:8787/status/token/1#3)
+ Test Files  1 passed (1)

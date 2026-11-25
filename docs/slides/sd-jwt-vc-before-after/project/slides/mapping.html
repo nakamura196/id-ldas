@@ -1,0 +1,14 @@
+<section id="mapping" class="alt">
+<p class="eyebrow">並べて比べる</p>
+<h2>同じ情報の、置き場所が変わる</h2>
+<table>
+<tr><th style="width:26%">何の情報か</th><th style="width:37%">Before（W3C 式）</th><th style="width:37%">After（IETF 式）</th></tr>
+<tr><td>本人を指す ID</td><td>credentialSubject.id</td><td>sub</td></tr>
+<tr><td>氏名・ORCID・所属など</td><td>credentialSubject の中</td><td>一段目</td></tr>
+<tr><td>失効の場所</td><td>credentialStatus → /status/1</td><td>status.status_list → /status/token/1</td></tr>
+<tr><td>確認した方法</td><td>evidence</td><td>ldas_verification</td></tr>
+<tr><td>有効期限</td><td>validUntil と exp の両方</td><td>exp だけ</td></tr>
+<tr><td>種類の宣言</td><td>@context と type</td><td>vct だけ（before にもある）</td></tr>
+</table>
+<aside>失効リストは 2 つ並べて出す。番号は同じ。W3C 式の会員証（vc+jwt）は /status/1 を使い続ける。</aside>
+</section>

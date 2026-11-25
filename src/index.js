@@ -33,15 +33,44 @@ const orcidKeys = createRemoteJWKSet(new URL(`${ORCID}/oauth/jwks`));
 
 export default {
   async fetch(request, env) {
+    return withSecurityHeaders(await route(request, env));
+  },
+};
+
+// Pages of this site must not be framed by other sites (clickjacking on the consent and wallet screens).
+function withSecurityHeaders(response) {
+  const r = new Response(response.body, response);
+  r.headers.set('X-Frame-Options', 'DENY');
+  if (!r.headers.has('Content-Security-Policy')) r.headers.set('Content-Security-Policy', "frame-ancestors 'none'");
+  r.headers.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+  return r;
+}
+
+// State-changing API calls must come from this site's own pages. SameSite=Lax cookies are still sent
+// from sibling *.ldas.jp sites (same "site"), so check the browser's Origin / Sec-Fetch-Site too.
+// Non-browser clients (curl) send neither header and are let through; they have no victim's cookie.
+function isCrossOriginWrite(request, url) {
+  if (request.method === 'GET' || request.method === 'HEAD' || request.method === 'OPTIONS') return false;
+  const origin = request.headers.get('Origin');
+  if (origin && origin !== url.origin) return true;
+  const site = request.headers.get('Sec-Fetch-Site');
+  return !!site && site !== 'same-origin' && site !== 'none';
+}
+
+async function route(request, env) {
     const url = new URL(request.url);
     try {
       if (url.pathname === '/.well-known/did.json') return await didDocument(url, env);
       if (url.pathname === '/status/1') return await statusListCredential(url, env);
+      if (url.pathname === '/status/token/1') return await tokenStatusList(url, env);
       if (url.pathname === '/auth/orcid') return await orcidStart(url, env);
       if (url.pathname === '/auth/orcid/callback') return await orcidCallback(request, url, env);
       if (url.pathname === '/auth/grdm') return await grdmStart(request, url, env);
       if (url.pathname === '/auth/grdm/callback') return await grdmCallback(request, url, env);
-      if (url.pathname.startsWith('/api/')) return await api(request, url, env);
+      if (url.pathname.startsWith('/api/')) {
+        if (isCrossOriginWrite(request, url)) return jsonApiError('cross-origin request refused', 403);
+        return await api(request, url, env);
+      }
       // The admin page itself is only served to admins (its data API checks again).
       if (url.pathname === '/admin' || url.pathname === '/admin.html') {
         const user = await currentUser(request, env);
@@ -53,8 +82,7 @@ export default {
       return json({ error: e.message }, e.status || 400);
     }
     return env.ASSETS.fetch(request);
-  },
-};
+}
 
 async function api(request, url, env) {
   const route = `${request.method} ${url.pathname}`;
@@ -63,7 +91,7 @@ async function api(request, url, env) {
     case 'POST /api/register/verify':  return registerVerify(request, url, env);
     case 'POST /api/login/options':    return loginOptions(url, env);
     case 'POST /api/login/verify':     return loginVerify(request, url, env);
-    case 'GET /api/me':                return me(request, env);
+    case 'GET /api/me':                return me(request, url, env);
     case 'POST /api/logout':           return logout(request, env);
     case 'POST /api/credential':       return issueCredential(request, url, env);
     case 'POST /api/credential/revoke': return revokeOwnCredential(request, env);
@@ -307,12 +335,16 @@ async function currentUser(request, env) {
   ).bind(sid, Date.now()).first();
 }
 
-async function me(request, env) {
+async function me(request, url, env) {
   const user = await currentUser(request, env);
+  // localhost targets are for development only: on the real site they would let a link send
+  // someone's credential to whatever is listening on their own machine.
+  const local = isLocalHost(url);
   const allowedReturnOrigins = (env.ALLOWED_RETURN_ORIGINS || '')
     .split(',')
     .map((s) => s.trim())
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter((p) => local || !/^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(p));
   const data = user
     ? {
         type: 'user',
@@ -370,15 +402,53 @@ async function encodeBitstring(revokedIndices) {
   return `u${b64url}`; // multibase base64url (no padding)
 }
 
-async function statusListCredential(url, env) {
-  const did = didFor(url);
-  const { privateKey } = await issuerKey(url, env);
+async function revokedStatusIndices(env) {
   const rejectedRows = await db(env).prepare("SELECT status_index FROM users WHERE status = 'rejected' AND status_index IS NOT NULL").all();
   const selfRevokedRows = await db(env).prepare('SELECT idx FROM revoked_indices').all();
-  const revokedIndices = [
+  return [
     ...rejectedRows.map((r) => Number(r.status_index)),
     ...selfRevokedRows.map((r) => Number(r.idx)),
   ];
+}
+
+// IETF Token Status List (draft-ietf-oauth-status-list), used by the SD-JWT VC.
+// Same indices as the W3C list at /status/1, but a different encoding: 1 bit per entry,
+// counted from the least significant bit of each byte, ZLIB-compressed, base64url without "u".
+const TOKEN_STATUS_TTL_SECONDS = 300;
+
+async function tokenStatusList(url, env) {
+  const did = didFor(url);
+  const { privateKey } = await issuerKey(url, env);
+  const bytes = new Uint8Array(STATUS_LIST_BYTES);
+  for (const idx of await revokedStatusIndices(env)) {
+    if (idx >= 0 && idx < STATUS_LIST_BYTES * 8) bytes[idx >> 3] |= 1 << (idx & 7);
+  }
+  const stream = new Blob([bytes]).stream().pipeThrough(new CompressionStream('deflate'));
+  const lst = uint8ArrayToBase64Url(new Uint8Array(await new Response(stream).arrayBuffer()));
+  const now = Math.floor(Date.now() / 1000);
+  const jwt = await new SignJWT({
+    sub: `${url.origin}/status/token/1`,
+    iat: now,
+    exp: now + 86400,
+    ttl: TOKEN_STATUS_TTL_SECONDS,
+    status_list: { bits: 1, lst },
+  })
+    .setProtectedHeader({ alg: 'EdDSA', typ: 'statuslist+jwt', kid: `${did}#key-1` })
+    .sign(privateKey);
+  return new Response(jwt, {
+    status: 200,
+    headers: {
+      'Content-Type': 'application/statuslist+jwt',
+      'Access-Control-Allow-Origin': '*',
+      'Cache-Control': `public, max-age=${TOKEN_STATUS_TTL_SECONDS}`,
+    },
+  });
+}
+
+async function statusListCredential(url, env) {
+  const did = didFor(url);
+  const { privateKey } = await issuerKey(url, env);
+  const revokedIndices = await revokedStatusIndices(env);
   const encodedList = await encodeBitstring(revokedIndices);
   const now = new Date();
   const statusCred = {
@@ -412,27 +482,55 @@ async function statusListCredential(url, env) {
   });
 }
 
+const STATUS_LIST_CAPACITY = STATUS_LIST_BYTES * 8;
+// Positions kept free for new members, so self-revocation alone can never fill the list.
+const STATUS_LIST_RESERVE = 10000;
+const SELF_REVOKE_PER_USER_PER_DAY = 3;
+const SELF_REVOKE_PER_DAY = 300;
+const DAY_MS = 86400 * 1000;
+
+// The next free position, computed inside one SQL statement so two requests cannot take the same one.
+const NEXT_STATUS_INDEX_SQL = `(SELECT MAX(m) + 1 FROM (
+  SELECT COALESCE(MAX(status_index), -1) AS m FROM users
+  UNION ALL SELECT COALESCE(MAX(idx), -1) AS m FROM revoked_indices))`;
+
 async function ensureStatusIndex(env, user) {
   if (user.status_index !== null && user.status_index !== undefined) return Number(user.status_index);
-  const maxUser = await db(env).prepare('SELECT COALESCE(MAX(status_index), -1) AS m FROM users').first();
-  const maxRev = await db(env).prepare('SELECT COALESCE(MAX(idx), -1) AS m FROM revoked_indices').first();
-  const nextIdx = Math.max(Number(maxUser?.m ?? -1), Number(maxRev?.m ?? -1)) + 1;
-  await db(env).prepare('UPDATE users SET status_index = ? WHERE id = ?').bind(nextIdx, user.id).run();
-  return nextIdx;
+  await db(env).prepare(`UPDATE users SET status_index = ${NEXT_STATUS_INDEX_SQL} WHERE id = ? AND status_index IS NULL`)
+    .bind(user.id).run();
+  const row = await db(env).prepare('SELECT status_index FROM users WHERE id = ?').bind(user.id).first();
+  return Number(row.status_index);
+}
+
+// A position outside the list cannot be revoked, so never issue a credential that points there.
+function assertRevocable(idx) {
+  if (!(idx >= 0 && idx < STATUS_LIST_CAPACITY)) {
+    throw Object.assign(new Error('status list is full; credentials cannot be issued until an administrator adds a new list'), { status: 503 });
+  }
 }
 
 // Self-revocation: mark current status_index as revoked in /status/1 and rotate to a fresh index.
+// Each call uses up one position in the list, so it is rate-limited per person and overall.
 async function revokeOwnCredential(request, env) {
   const user = await currentUser(request, env);
   if (!user) return jsonApiError('log in first', 401);
+  if (!(await hitLimit(env, `revoke:user:${user.id}`, SELF_REVOKE_PER_USER_PER_DAY, DAY_MS))) {
+    return jsonApiError(`you can revoke at most ${SELF_REVOKE_PER_USER_PER_DAY} times a day`, 429);
+  }
+  if (!(await hitLimit(env, 'revoke:all', SELF_REVOKE_PER_DAY, DAY_MS))) {
+    return jsonApiError('too many revocations today; try again tomorrow', 429);
+  }
   const oldIdx = await ensureStatusIndex(env, user);
-  const maxUser = await db(env).prepare('SELECT COALESCE(MAX(status_index), -1) AS m FROM users').first();
-  const maxRev = await db(env).prepare('SELECT COALESCE(MAX(idx), -1) AS m FROM revoked_indices').first();
-  const newIdx = Math.max(Number(maxUser?.m ?? -1), Number(maxRev?.m ?? -1), oldIdx) + 1;
+  const top = await db(env).prepare(`SELECT ${NEXT_STATUS_INDEX_SQL} AS n`).first();
+  if (Number(top?.n) >= STATUS_LIST_CAPACITY - STATUS_LIST_RESERVE) {
+    return jsonApiError('the revocation list is almost full; ask an administrator', 503);
+  }
+  // One transaction: record the old position as revoked, then move the person to the next free one.
   await db(env).batch([
     db(env).prepare('INSERT OR IGNORE INTO revoked_indices (idx, user_id, revoked_at) VALUES (?, ?, ?)').bind(oldIdx, user.id, Date.now()),
-    db(env).prepare('UPDATE users SET status_index = ? WHERE id = ?').bind(newIdx, user.id),
+    db(env).prepare(`UPDATE users SET status_index = ${NEXT_STATUS_INDEX_SQL} WHERE id = ?`).bind(user.id),
   ]);
+  const newIdx = Number((await db(env).prepare('SELECT status_index FROM users WHERE id = ?').bind(user.id).first()).status_index);
   return jsonApi({
     type: 'revocation',
     id: String(oldIdx),
@@ -472,6 +570,8 @@ async function issueCredential(request, url, env) {
           ...(rawCnf.crv ? { crv: rawCnf.crv } : {}),
           ...(rawCnf.x ? { x: rawCnf.x } : {}),
           ...(rawCnf.y ? { y: rawCnf.y } : {}),
+          // The holder's kb+jwt names its key with this kid; some verifiers (walt.id) look the key up by it.
+          ...(typeof rawCnf.kid === 'string' && rawCnf.kid.length <= 128 ? { kid: rawCnf.kid } : {}),
         }
       : undefined;
   const ALL_SD_KEYS = ['name', 'orcid', 'memberOf', 'wallet', 'affiliation', 'emailDomain'];
@@ -481,6 +581,7 @@ async function issueCredential(request, url, env) {
 
   const did = didFor(url);
   const statusIndex = await ensureStatusIndex(env, user);
+  assertRevocable(statusIndex);
   const { privateKey } = await issuerKey(url, env);
   const ttlDays = Math.max(1, Number(env.VC_TTL_DAYS || VC_TTL_DAYS));
   const now = new Date();
@@ -488,7 +589,6 @@ async function issueCredential(request, url, env) {
   const credential = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
     type: ['VerifiableCredential', 'LdasMemberCredential'],
-    ...(format === 'dc+sd-jwt' ? { vct: `${url.origin}/credentials/member/v1` } : {}),
     issuer: did,
     iss: did,
     iat: Math.floor(now.getTime() / 1000),
@@ -538,6 +638,26 @@ async function issueCredential(request, url, env) {
   };
 
   if (format === 'dc+sd-jwt') {
+    // IETF SD-JWT VC: claims sit at the top level (no credentialSubject, no @context),
+    // the subject goes in `sub`, revocation in `status` (IETF Token Status List).
+    // The W3C-shaped `credential` above is kept only for the vc+jwt format.
+    const subjectClaims = { ...credential.credentialSubject };
+    delete subjectClaims.id;
+    const { type: _evidenceType, ...verification } = credential.evidence[0];
+    const sdClaims = {
+      iss: did,
+      iat: credential.iat,
+      exp: credential.exp,
+      vct: `${url.origin}/credentials/member/v1`,
+      sub: credential.credentialSubject.id,
+      ...(cnfJwk ? { cnf: { jwk: cnfJwk } } : {}),
+      ...(!cnfJwk && nonce ? { nonce } : {}),
+      ...(!cnfJwk && aud ? { aud } : {}),
+      status: { status_list: { idx: statusIndex, uri: `${url.origin}/status/token/1` } },
+      // How the issuer checked this person. Not a registered claim, hence the ldas_ prefix.
+      ldas_verification: verification,
+      ...subjectClaims,
+    };
     const sdjwt = new SdJwtInstance({
       signer: async (data) => {
         const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(data));
@@ -557,19 +677,19 @@ async function issueCredential(request, url, env) {
       ...(user.email_domain ? ['emailDomain'] : []),
     ];
     const issued = await sdjwt.issue(
-      credential,
-      { credentialSubject: { _sd: sdKeys } },
+      sdClaims,
+      { _sd: sdKeys },
       { header: { typ: 'dc+sd-jwt', kid: `${did}#key-1` } },
     );
-    const presentFrame = { credentialSubject: {} };
+    const presentFrame = {};
     for (const k of sdKeys) {
-      if (requestedDisclose.includes(k)) presentFrame.credentialSubject[k] = true;
+      if (requestedDisclose.includes(k)) presentFrame[k] = true;
     }
     const presentation = await sdjwt.present(issued, presentFrame);
     return jsonApi({
       type: 'credential',
       id: String(statusIndex),
-      attributes: { jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential },
+      attributes: { jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential: sdClaims },
     });
   }
 
@@ -645,6 +765,52 @@ const KNOWN_INSTITUTIONS = [
   { root: 'waseda.jp', affiliation: 'Waseda University' },
 ];
 
+// Fixed-window counter, updated in one SQL statement (safe when requests arrive at the same time).
+// Returns true while the count for this window is within the limit.
+async function hitLimit(env, key, limit, windowMs) {
+  const now = Date.now();
+  const row = await db(env).prepare(
+    `INSERT INTO rate_limits (key, count, reset_at) VALUES (?, 1, ?)
+     ON CONFLICT(key) DO UPDATE SET
+       count = CASE WHEN rate_limits.reset_at <= ? THEN 1 ELSE rate_limits.count + 1 END,
+       reset_at = CASE WHEN rate_limits.reset_at <= ? THEN excluded.reset_at ELSE rate_limits.reset_at END
+     RETURNING count`,
+  ).bind(key, now + windowMs, now, now).first();
+  return Number(row?.count ?? Infinity) <= limit;
+}
+
+function isLocalHost(url) {
+  return url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+}
+
+// Mail goes to addresses typed by strangers, so cap it per sender IP and overall
+// (Resend's free plan sends 100 a day; going over would stop sign-in for everyone).
+const MAIL_PER_IP_PER_HOUR = 5;
+const MAIL_PER_DAY = 80;
+
+async function allowMail(request, url, env) {
+  // Local development (wrangler dev, e2e tests) sends no real mail, so it is not limited.
+  if (isLocalHost(url)) return null;
+  const ip = request.headers.get('CF-Connecting-IP') || 'unknown';
+  if (!(await hitLimit(env, `mail:ip:${await sha256Hex(ip)}`, MAIL_PER_IP_PER_HOUR, 3600 * 1000))) {
+    return jsonApiError('確認コードの送信が多すぎます。1 時間ほどしてからお試しください', 429);
+  }
+  if (!(await hitLimit(env, 'mail:all', MAIL_PER_DAY, DAY_MS))) {
+    return jsonApiError('本日の確認メールの送信上限に達しました。明日お試しいただくか、ORCID でログインしてください', 429);
+  }
+  await db(env).prepare('DELETE FROM rate_limits WHERE reset_at < ?').bind(Date.now() - DAY_MS).run();
+  return null;
+}
+
+// Use up one attempt before comparing the code. Done in one statement, so sending many guesses
+// at the same moment cannot get past the limit. Returns the row (with the new count) or null.
+async function takeAttempt(env, table, id, extraWhere = '', extraParams = []) {
+  return db(env).prepare(
+    `UPDATE ${table} SET attempts = attempts + 1
+     WHERE id = ? AND attempts < ? AND expires_at > ? ${extraWhere} RETURNING *`,
+  ).bind(id, EMAIL_MAX_ATTEMPTS, Date.now(), ...extraParams).first();
+}
+
 async function sha256Hex(text) {
   const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
   return Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -697,6 +863,8 @@ async function emailChallenge(request, url, env) {
   if (recent && now - Number(recent.created_at) < EMAIL_COOLDOWN_MS) {
     return jsonApiError('確認コードの再送信は 60 秒お待ちください', 429);
   }
+  const limited = await allowMail(request, url, env);
+  if (limited) return limited;
 
   const rand = new Uint32Array(1);
   crypto.getRandomValues(rand);
@@ -712,7 +880,7 @@ async function emailChallenge(request, url, env) {
       .bind(id, user.id, emailHash, emailDomain, affiliation, codeHash, now + EMAIL_CODE_TTL, now),
   ]);
 
-  const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  const isLocal = isLocalHost(url);
   if (env.RESEND_API_KEY) {
     const from = env.MAIL_FROM || 'LDAS ID <noreply@id.ldas.jp>';
     const sendRes = await fetch('https://api.resend.com/emails', {
@@ -762,29 +930,24 @@ async function emailVerify(request, env) {
     return jsonApiError('6 桁の確認コードを入力してください', 400);
   }
 
-  const row = await db(env)
-    .prepare('SELECT * FROM email_verifications WHERE id = ? AND user_id = ?')
-    .bind(challengeId, user.id)
-    .first();
-  if (!row || Number(row.expires_at) < Date.now()) {
-    if (row) await db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id).run();
-    return jsonApiError('確認コードの有効期限が切れています。最初からやり直してください', 400);
+  const row = await takeAttempt(env, 'email_verifications', challengeId, 'AND user_id = ?', [user.id]);
+  if (!row) {
+    await db(env).prepare('DELETE FROM email_verifications WHERE id = ? AND user_id = ?').bind(challengeId, user.id).run();
+    return jsonApiError('確認コードの有効期限が切れたか、試行回数の上限に達しました。最初からやり直してください', 400);
   }
 
   const expectedHash = await sha256Hex(`${row.id}:${code}`);
   if (!constantTimeEqual(expectedHash, String(row.code_hash))) {
-    const nextAttempts = Number(row.attempts) + 1;
-    if (nextAttempts >= EMAIL_MAX_ATTEMPTS) {
-      await db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id).run();
-      return jsonApiError('試行回数の上限に達しました。確認コードを再発行してください', 429);
-    }
-    await db(env).prepare('UPDATE email_verifications SET attempts = ? WHERE id = ?').bind(nextAttempts, row.id).run();
-    return jsonApiError(`確認コードが一致しません（残り ${EMAIL_MAX_ATTEMPTS - nextAttempts} 回）`, 400);
+    const left = EMAIL_MAX_ATTEMPTS - Number(row.attempts);
+    if (left <= 0) await db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id).run();
+    return jsonApiError(left <= 0 ? '試行回数の上限に達しました。確認コードを再発行してください' : `確認コードが一致しません（残り ${left} 回）`, left <= 0 ? 429 : 400);
   }
 
+  // The code is used once: only the request that actually deletes the row goes on.
+  const used = await db(env).prepare('DELETE FROM email_verifications WHERE id = ? RETURNING id').bind(row.id).first();
+  if (!used) return jsonApiError('この確認コードは既に使われました', 400);
   const now = Date.now();
   await db(env).batch([
-    db(env).prepare('DELETE FROM email_verifications WHERE id = ?').bind(row.id),
     db(env)
       .prepare('UPDATE users SET email_domain = ?, affiliation = ?, affiliation_method = ?, affiliation_verified_at = ? WHERE id = ?')
       .bind(row.domain, row.affiliation, 'email-code', now, user.id),
@@ -824,6 +987,8 @@ async function emailLoginStart(request, url, env) {
   if (recent && now - Number(recent.created_at) < EMAIL_COOLDOWN_MS) {
     return jsonApiError('確認コードの再送信は 60 秒お待ちください', 429);
   }
+  const limited = await allowMail(request, url, env);
+  if (limited) return limited;
 
   const rand = new Uint32Array(1);
   crypto.getRandomValues(rand);
@@ -838,7 +1003,7 @@ async function emailLoginStart(request, url, env) {
       .bind(id, emailHash, emailDomain, affiliation, isFreeWebmail, codeHash, now + EMAIL_CODE_TTL, now),
   ]);
 
-  const isLocal = url.hostname === 'localhost' || url.hostname === '127.0.0.1';
+  const isLocal = isLocalHost(url);
   if (env.RESEND_API_KEY) {
     const from = env.MAIL_FROM || 'LDAS ID <noreply@ldas.jp>';
     const sendRes = await fetch('https://api.resend.com/emails', {
@@ -884,29 +1049,23 @@ async function emailLoginVerify(request, env) {
     return jsonApiError('6 桁の確認コードを入力してください', 400);
   }
 
-  const row = await db(env)
-    .prepare('SELECT * FROM email_login_challenges WHERE id = ?')
-    .bind(challengeId)
-    .first();
-  if (!row) return jsonApiError('確認コードが見つかりません。もう一度送信してください', 400);
-
   const now = Date.now();
-  if (Number(row.expires_at) < now) {
-    await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ?').bind(challengeId).run();
-    return jsonApiError('確認コードの有効期限（10分）が切れました。再送信してください', 400);
-  }
-  if (Number(row.attempts) >= EMAIL_MAX_ATTEMPTS) {
-    await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ?').bind(challengeId).run();
-    return jsonApiError('試行回数の上限に達しました。確認コードを再送信してください', 429);
+  const row = await takeAttempt(env, 'email_login_challenges', challengeId);
+  if (!row) {
+    const gone = await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ? RETURNING id').bind(challengeId).first();
+    return gone
+      ? jsonApiError('確認コードの有効期限（10分）が切れたか、試行回数の上限に達しました。再送信してください', 429)
+      : jsonApiError('確認コードが見つかりません。もう一度送信してください', 400);
   }
 
   const expectedHash = await sha256Hex(`${challengeId}:${code}`);
   if (!constantTimeEqual(expectedHash, String(row.code_hash))) {
-    await db(env).prepare('UPDATE email_login_challenges SET attempts = attempts + 1 WHERE id = ?').bind(challengeId).run();
     return jsonApiError('確認コードが一致しません', 400);
   }
 
-  await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ?').bind(challengeId).run();
+  // The code is used once: only the request that actually deletes the row signs in.
+  const used = await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ? RETURNING id').bind(challengeId).first();
+  if (!used) return jsonApiError('この確認コードは既に使われました', 400);
 
   const emailDomain = Number(row.is_free_webmail) ? null : String(row.domain);
   const affiliation = Number(row.is_free_webmail) ? null : String(row.affiliation);

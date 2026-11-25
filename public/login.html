@@ -11,7 +11,6 @@
 <main class="auth-page">
   <div class="card">
     <div class="card-header">
-      <div class="card-badge">LDAS ID</div>
       <h1 data-i18n="login.title"></h1>
       <p class="lead" data-i18n="login.lead"></p>
     </div>
@@ -20,22 +19,22 @@
       <p id="nextNoticeText" style="margin:0;"></p>
     </section>
 
-    <section id="authCard" style="display:flex; flex-direction:column; gap:10px;">
+    <section id="authCard" class="stack">
       <a id="orcidBtn" class="button orcid full" href="/auth/orcid" data-i18n="home.orcid"></a>
       <a id="grdmBtn" class="button secondary full" href="/auth/grdm" hidden>GakuNin RDM でログイン（大学所属者）</a>
 
-      <div class="divider"><span>メールアドレス（確認コード）でログイン・登録</span></div>
-      <div id="emailStep1" style="display:flex; flex-direction:column; gap:8px;">
-        <input id="emailInput" type="email" placeholder="メールアドレス（例：name@u-tokyo.ac.jp）" autocomplete="email" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px;">
-        <input id="nameInput" type="text" placeholder="表示名（初回登録時・任意）" autocomplete="name" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:14px;">
+      <div class="divider"><span>メールアドレス（確認コード）</span></div>
+      <div id="emailStep1" class="stack-sm">
+        <input id="emailInput" type="email" placeholder="メールアドレス（例: name@example.ac.jp）" autocomplete="email">
+        <input id="nameInput" type="text" placeholder="表示名（初回登録時・任意）" autocomplete="name">
         <button id="sendCodeBtn" type="button" class="secondary full">6 桁の確認コードを送信</button>
-        <p style="margin:0; font-size:11.5px; color:var(--muted); line-height:1.5;">
-          ※ 生メールアドレスは DB や証明書（VC）に一切保存しません（秘密鍵付きハッシュ値のみで本人を識別します）。大学・機関ドメインの場合は所属証明も同時に完了します。
+        <p class="hint">
+          生メールアドレスは DB や証明書（VC）に保存しません。大学・機関ドメインの場合は所属証明も同時に完了します。
         </p>
       </div>
 
-      <div id="emailStep2" hidden style="display:flex; flex-direction:column; gap:8px;">
-        <input id="codeInput" type="text" inputmode="numeric" maxlength="6" placeholder="届いた 6 桁の確認コード" style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:8px; font-size:16px; letter-spacing:0.2em; text-align:center;">
+      <div id="emailStep2" hidden class="stack-sm">
+        <input id="codeInput" type="text" inputmode="numeric" maxlength="6" class="code-input" placeholder="届いた 6 桁の確認コード">
         <button id="verifyCodeBtn" type="button" class="full">確認してログイン</button>
         <button id="backEmailBtn" type="button" class="secondary small">メールアドレスを入力し直す</button>
       </div>
