@@ -21,6 +21,7 @@ import { SignJWT, importJWK, generateKeyPair, exportJWK, createRemoteJWKSet, jwt
 import { SdJwtInstance, uint8ArrayToBase64Url } from '@sd-jwt/core';
 import { db } from './store.js';
 import { recoverAddress, checksum } from './eth.js';
+import { oid4vciRoute, createOffer } from './oid4vci.js';
 
 export { Store } from './store.js';
 
@@ -30,6 +31,8 @@ const SESSION_TTL = 24 * 60 * 60 * 1000;
 const VC_TTL_DAYS = 30;
 const ORCID = 'https://orcid.org';
 const orcidKeys = createRemoteJWKSet(new URL(`${ORCID}/oauth/jwks`));
+// What the wallet issuance module (src/oid4vci.js) borrows from this file.
+const OID4VCI_DEPS = { db, currentUser, issueMemberSdJwt, hitLimit, jsonApi, jsonApiError };
 
 export default {
   async fetch(request, env) {
@@ -67,6 +70,8 @@ async function route(request, env) {
       if (url.pathname === '/auth/orcid/callback') return await orcidCallback(request, url, env);
       if (url.pathname === '/auth/grdm') return await grdmStart(request, url, env);
       if (url.pathname === '/auth/grdm/callback') return await grdmCallback(request, url, env);
+      const vci = await oid4vciRoute(request, url, env, OID4VCI_DEPS); // wallet apps (OID4VCI)
+      if (vci) return vci;
       if (url.pathname.startsWith('/api/')) {
         if (isCrossOriginWrite(request, url)) return jsonApiError('cross-origin request refused', 403);
         return await api(request, url, env);
@@ -95,6 +100,7 @@ async function api(request, url, env) {
     case 'POST /api/logout':           return logout(request, env);
     case 'POST /api/credential':       return issueCredential(request, url, env);
     case 'POST /api/credential/revoke': return revokeOwnCredential(request, env);
+    case 'POST /api/oid4vci/offers':   return createOffer(request, url, env, OID4VCI_DEPS);
     case 'POST /api/wallet/challenge': return walletChallenge(request, url, env);
     case 'POST /api/wallet/verify':    return walletVerify(request, env);
     case 'POST /api/email/challenge':      return emailChallenge(request, url, env);
@@ -568,7 +574,6 @@ async function issueCredential(request, url, env) {
   if (user.status !== 'approved' && user.status !== 'verified') {
     return jsonApiError('not approved yet', 403);
   }
-  const isLdasMember = user.status === 'approved';
   const reqBody = await request.json().catch(() => ({}));
   const format = reqBody?.format === 'sd-jwt' || reqBody?.format === 'dc+sd-jwt' ? 'dc+sd-jwt' : 'vc+jwt';
   const nonce = typeof reqBody?.nonce === 'string' && reqBody.nonce.length <= 256 ? reqBody.nonce : undefined;
@@ -592,6 +597,37 @@ async function issueCredential(request, url, env) {
     ? reqBody.disclose.filter((k) => ALL_SD_KEYS.includes(k))
     : ALL_SD_KEYS;
 
+  if (format === 'dc+sd-jwt') {
+    const { issued, sdjwt, sdKeys, sdClaims, statusIndex } = await issueMemberSdJwt(url, env, user, { cnfJwk, nonce, aud });
+    const presentFrame = {};
+    for (const k of sdKeys) {
+      if (requestedDisclose.includes(k)) presentFrame[k] = true;
+    }
+    const presentation = await sdjwt.present(issued, presentFrame);
+    return jsonApi({
+      type: 'credential',
+      id: String(statusIndex),
+      attributes: { jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential: sdClaims },
+    });
+  }
+
+  const { credential, did, statusIndex, privateKey, now, until } = await memberCredential(url, env, user, { cnfJwk, nonce, aud });
+  const jwt = await new SignJWT(credential)
+    .setProtectedHeader({ alg: 'EdDSA', typ: 'vc+jwt', kid: `${did}#key-1` })
+    .setIssuedAt(Math.floor(now.getTime() / 1000))
+    .setExpirationTime(Math.floor(until.getTime() / 1000))
+    .sign(privateKey);
+  return jsonApi({
+    type: 'credential',
+    id: String(statusIndex),
+    attributes: { jwt, format: 'vc+jwt', credential },
+  });
+}
+
+// The membership credential in W3C shape, for this person. Used as is for vc+jwt and as the source
+// of the claims for dc+sd-jwt. cnfJwk binds it to the holder's key; nonce/aud only when no key is bound.
+async function memberCredential(url, env, user, { cnfJwk, nonce, aud } = {}) {
+  const isLdasMember = user.status === 'approved';
   const did = didFor(url);
   const statusIndex = await ensureStatusIndex(env, user);
   assertRevocable(statusIndex);
@@ -655,77 +691,62 @@ async function issueCredential(request, url, env) {
       checkedAt: new Date(user.approved_at || user.created_at).toISOString(),
     }],
   };
+  return { credential, did, statusIndex, privateKey, now, until };
+}
 
-  if (format === 'dc+sd-jwt') {
-    // IETF SD-JWT VC: claims sit at the top level (no credentialSubject, no @context),
-    // the subject goes in `sub`, revocation in `status` (IETF Token Status List).
-    // The W3C-shaped `credential` above is kept only for the vc+jwt format.
-    const subjectClaims = { ...credential.credentialSubject };
-    delete subjectClaims.id;
-    delete subjectClaims.ldasUserId; // same value as `sub`
-    const { type: _evidenceType, ...verification } = credential.evidence[0];
-    const sdClaims = {
-      iss: did,
-      iat: credential.iat,
-      exp: credential.exp,
-      vct: `${url.origin}/credentials/member/v1`,
-      // `sub` is never hidden, so it must not be the wallet DID or the ORCID URL:
-      // that would show both even when the holder chose not to disclose them.
-      // Use the opaque account id; the wallet and ORCID iD stay selectively disclosable below.
-      sub: `urn:ldas:user:${user.id}`,
-      ...(cnfJwk ? { cnf: { jwk: cnfJwk } } : {}),
-      ...(!cnfJwk && nonce ? { nonce } : {}),
-      ...(!cnfJwk && aud ? { aud } : {}),
-      status: { status_list: { idx: statusIndex, uri: `${url.origin}/status/token/1` } },
-      // How the issuer checked this person. Not a registered claim, hence the ldas_ prefix.
-      ldas_verification: verification,
-      ...subjectClaims,
-    };
-    const sdjwt = new SdJwtInstance({
-      signer: async (data) => {
-        const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(data));
-        return uint8ArrayToBase64Url(new Uint8Array(sig));
-      },
-      signAlg: 'EdDSA',
-      hasher: sdHasher,
-      hashAlg: 'sha-256',
-      saltGenerator: sdSaltGenerator,
-    });
-    const sdKeys = [
-      'name',
-      ...(user.orcid ? ['orcid'] : []),
-      ...(isLdasMember ? ['memberOf'] : []),
-      ...(user.wallet ? ['wallet'] : []),
-      ...(user.affiliation ? ['affiliation'] : []),
-      ...(user.email_domain ? ['emailDomain'] : []),
-    ];
-    const issued = await sdjwt.issue(
-      sdClaims,
-      { _sd: sdKeys },
-      { header: { typ: 'dc+sd-jwt', kid: `${did}#key-1` } },
-    );
-    const presentFrame = {};
-    for (const k of sdKeys) {
-      if (requestedDisclose.includes(k)) presentFrame[k] = true;
-    }
-    const presentation = await sdjwt.present(issued, presentFrame);
-    return jsonApi({
-      type: 'credential',
-      id: String(statusIndex),
-      attributes: { jwt: presentation, format: 'dc+sd-jwt', disclosed: requestedDisclose, credential: sdClaims },
-    });
-  }
-
-  const jwt = await new SignJWT(credential)
-    .setProtectedHeader({ alg: 'EdDSA', typ: 'vc+jwt', kid: `${did}#key-1` })
-    .setIssuedAt(Math.floor(now.getTime() / 1000))
-    .setExpirationTime(Math.floor(until.getTime() / 1000))
-    .sign(privateKey);
-  return jsonApi({
-    type: 'credential',
-    id: String(statusIndex),
-    attributes: { jwt, format: 'vc+jwt', credential },
+// The dc+sd-jwt, issued with every disclosure attached. The holder decides what to show when presenting:
+// the page path (issueCredential) cuts it down right away, a wallet app (OID4VCI) keeps it whole.
+async function issueMemberSdJwt(url, env, user, { cnfJwk, nonce, aud } = {}) {
+  const isLdasMember = user.status === 'approved';
+  const { credential, did, statusIndex, privateKey } = await memberCredential(url, env, user, { cnfJwk, nonce, aud });
+  // IETF SD-JWT VC: claims sit at the top level (no credentialSubject, no @context),
+  // the subject goes in `sub`, revocation in `status` (IETF Token Status List).
+  // The W3C-shaped `credential` above is kept only for the vc+jwt format.
+  const subjectClaims = { ...credential.credentialSubject };
+  delete subjectClaims.id;
+  delete subjectClaims.ldasUserId; // same value as `sub`
+  const { type: _evidenceType, ...verification } = credential.evidence[0];
+  const sdClaims = {
+    iss: did,
+    iat: credential.iat,
+    exp: credential.exp,
+    vct: `${url.origin}/credentials/member/v1`,
+    // `sub` is never hidden, so it must not be the wallet DID or the ORCID URL:
+    // that would show both even when the holder chose not to disclose them.
+    // Use the opaque account id; the wallet and ORCID iD stay selectively disclosable below.
+    sub: `urn:ldas:user:${user.id}`,
+    ...(cnfJwk ? { cnf: { jwk: cnfJwk } } : {}),
+    ...(!cnfJwk && nonce ? { nonce } : {}),
+    ...(!cnfJwk && aud ? { aud } : {}),
+    status: { status_list: { idx: statusIndex, uri: `${url.origin}/status/token/1` } },
+    // How the issuer checked this person. Not a registered claim, hence the ldas_ prefix.
+    ldas_verification: verification,
+    ...subjectClaims,
+  };
+  const sdjwt = new SdJwtInstance({
+    signer: async (data) => {
+      const sig = await crypto.subtle.sign('Ed25519', privateKey, new TextEncoder().encode(data));
+      return uint8ArrayToBase64Url(new Uint8Array(sig));
+    },
+    signAlg: 'EdDSA',
+    hasher: sdHasher,
+    hashAlg: 'sha-256',
+    saltGenerator: sdSaltGenerator,
   });
+  const sdKeys = [
+    'name',
+    ...(user.orcid ? ['orcid'] : []),
+    ...(isLdasMember ? ['memberOf'] : []),
+    ...(user.wallet ? ['wallet'] : []),
+    ...(user.affiliation ? ['affiliation'] : []),
+    ...(user.email_domain ? ['emailDomain'] : []),
+  ];
+  const issued = await sdjwt.issue(
+    sdClaims,
+    { _sd: sdKeys },
+    { header: { typ: 'dc+sd-jwt', kid: `${did}#key-1` } },
+  );
+  return { issued, sdjwt, sdKeys, sdClaims, statusIndex };
 }
 
 // ---------------------------------------------------------------------------
