@@ -21,7 +21,7 @@
     "WALLET_CHAIN_ID": "11155111",
     // Comma-separated origins allowed for ?return_to= / OID4VP redirect_uri. Listed one by one (no
     // "*.ldas.jp"): a credential may only go to apps we run. localhost entries are dropped on the real site.
-    "ALLOWED_RETURN_ORIGINS": "https://id.ldas.jp,https://ldas.jp,https://pay.ldas.jp,https://dataspace.ldas.jp,https://ds.ldas.jp,https://cliox.ldas.jp,https://cliox-cf.ldas.jp,http://localhost:*,http://127.0.0.1:*",
+    "ALLOWED_RETURN_ORIGINS": "https://id.ldas.jp,https://ldas.jp,https://pay.ldas.jp,https://dataspace.ldas.jp,https://ds.ldas.jp,https://cliox.ldas.jp,https://cliox-cf.ldas.jp,https://news-a.ldas.jp,http://localhost:*,http://127.0.0.1:*",
     // Default validity period (days) for issued VCs / SD-JWTs
     "VC_TTL_DAYS": "30",
     // Sender address for institutional email verification (uses Resend verified domain ldas.jp)
