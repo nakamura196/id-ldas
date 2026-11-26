@@ -345,6 +345,18 @@ $('issue').onclick = async () => {
   } catch (err) { msg(err.message, true); }
 };
 
+// Classic script that defines the global `qrcode`; loaded once, the first time it is needed.
+function loadQrcode() {
+  if (window.qrcode) return Promise.resolve(window.qrcode);
+  return new Promise((resolve, reject) => {
+    const el = document.createElement('script');
+    el.src = '/vendor/qrcode-generator-1.4.4.js';
+    el.onload = () => (window.qrcode ? resolve(window.qrcode) : reject(new Error('QR library did not load')));
+    el.onerror = () => reject(new Error('QR library did not load'));
+    document.head.appendChild(el);
+  });
+}
+
 // Wallet app (OID4VCI): a one-time offer link, shown as a QR code, plus a 6-digit code typed in the app.
 $('makeOffer').onclick = async () => {
   const btn = $('makeOffer');
@@ -355,8 +367,8 @@ $('makeOffer').onclick = async () => {
     $('offerLink').value = res.offerUri;
     $('offerOpen').href = res.offerUri;
     $('offerTx').textContent = res.txCode;
-    // QR library loaded only when needed (qrcode-generator 1.4.4, MIT, no dependencies).
-    const { default: qrcode } = await import('https://cdn.jsdelivr.net/npm/qrcode-generator@1.4.4/+esm');
+    // QR library loaded only when needed, from our own origin (public/vendor: qrcode-generator 1.4.4, MIT, no dependencies).
+    const qrcode = await loadQrcode();
     const qr = qrcode(0, 'M');
     qr.addData(res.offerUri);
     qr.make();

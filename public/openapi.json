@@ -559,7 +559,7 @@
       "sessionCookie": {
         "type": "apiKey",
         "in": "cookie",
-        "name": "sid",
+        "name": "__Host-sid",
         "description": "HttpOnly session cookie issued after signing in at /login. Sign in via the top bar button to execute authenticated endpoints."
       },
       "bearerAccessToken": {
