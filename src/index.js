@@ -21,7 +21,7 @@ import { SignJWT, importJWK, generateKeyPair, exportJWK, createRemoteJWKSet, jwt
 import { SdJwtInstance, uint8ArrayToBase64Url } from '@sd-jwt/core';
 import { db } from './store.js';
 import { recoverAddress, checksum } from './eth.js';
-import { oid4vciRoute, createOffer } from './oid4vci.js';
+import { oid4vciRoute, createOffer, WALLET_INDEX_BASE } from './oid4vci.js';
 
 export { Store } from './store.js';
 
@@ -411,9 +411,14 @@ async function encodeBitstring(revokedIndices) {
 async function revokedStatusIndices(env) {
   const rejectedRows = await db(env).prepare("SELECT status_index FROM users WHERE status = 'rejected' AND status_index IS NOT NULL").all();
   const selfRevokedRows = await db(env).prepare('SELECT idx FROM revoked_indices').all();
+  // Wallet copies (src/oid4vci.js): revoked by the person, or the person was stopped.
+  const copyRows = await db(env).prepare(
+    "SELECT idx FROM oid4vci_copies WHERE revoked_at IS NOT NULL OR user_id IN (SELECT id FROM users WHERE status = 'rejected')",
+  ).all();
   return [
     ...rejectedRows.map((r) => Number(r.status_index)),
     ...selfRevokedRows.map((r) => Number(r.idx)),
+    ...copyRows.map((r) => Number(r.idx)),
   ];
 }
 
@@ -510,7 +515,7 @@ async function ensureStatusIndex(env, user) {
 
 // A position outside the list cannot be revoked, so never issue a credential that points there.
 function assertRevocable(idx) {
-  if (!(idx >= 0 && idx < STATUS_LIST_CAPACITY)) {
+  if (!(idx >= 0 && idx < WALLET_INDEX_BASE)) {
     throw Object.assign(new Error('status list is full; credentials cannot be issued until an administrator adds a new list'), { status: 503 });
   }
 }
@@ -528,13 +533,15 @@ async function revokeOwnCredential(request, env) {
   }
   const oldIdx = await ensureStatusIndex(env, user);
   const top = await db(env).prepare(`SELECT ${NEXT_STATUS_INDEX_SQL} AS n`).first();
-  if (Number(top?.n) >= STATUS_LIST_CAPACITY - STATUS_LIST_RESERVE) {
+  if (Number(top?.n) >= WALLET_INDEX_BASE - STATUS_LIST_RESERVE) {
     return jsonApiError('the revocation list is almost full; ask an administrator', 503);
   }
   // One transaction: record the old position as revoked, then move the person to the next free one.
+  // Wallet copies go too: "revoke my credentials" means all of them, wherever they are.
   await db(env).batch([
     db(env).prepare('INSERT OR IGNORE INTO revoked_indices (idx, user_id, revoked_at) VALUES (?, ?, ?)').bind(oldIdx, user.id, Date.now()),
     db(env).prepare(`UPDATE users SET status_index = ${NEXT_STATUS_INDEX_SQL} WHERE id = ?`).bind(user.id),
+    db(env).prepare('UPDATE oid4vci_copies SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL').bind(Date.now(), user.id),
   ]);
   const newIdx = Number((await db(env).prepare('SELECT status_index FROM users WHERE id = ?').bind(user.id).first()).status_index);
   return jsonApi({
@@ -626,14 +633,16 @@ async function issueCredential(request, url, env) {
 
 // The membership credential in W3C shape, for this person. Used as is for vc+jwt and as the source
 // of the claims for dc+sd-jwt. cnfJwk binds it to the holder's key; nonce/aud only when no key is bound.
-async function memberCredential(url, env, user, { cnfJwk, nonce, aud } = {}) {
+// walletCopy: { statusIndex } issues one wallet copy (src/oid4vci.js): its own status position, and
+// the issue time rounded down to the UTC day so copies issued the same day look alike.
+async function memberCredential(url, env, user, { cnfJwk, nonce, aud, walletCopy } = {}) {
   const isLdasMember = user.status === 'approved';
   const did = didFor(url);
-  const statusIndex = await ensureStatusIndex(env, user);
-  assertRevocable(statusIndex);
+  const statusIndex = walletCopy ? walletCopy.statusIndex : await ensureStatusIndex(env, user);
+  if (!walletCopy) assertRevocable(statusIndex);
   const { privateKey } = await issuerKey(url, env);
   const ttlDays = Math.max(1, Number(env.VC_TTL_DAYS || VC_TTL_DAYS));
-  const now = new Date();
+  const now = walletCopy ? new Date(Math.floor(Date.now() / DAY_MS) * DAY_MS) : new Date();
   const until = new Date(now.getTime() + ttlDays * 86400 * 1000);
   const credential = {
     '@context': ['https://www.w3.org/ns/credentials/v2'],
@@ -696,9 +705,9 @@ async function memberCredential(url, env, user, { cnfJwk, nonce, aud } = {}) {
 
 // The dc+sd-jwt, issued with every disclosure attached. The holder decides what to show when presenting:
 // the page path (issueCredential) cuts it down right away, a wallet app (OID4VCI) keeps it whole.
-async function issueMemberSdJwt(url, env, user, { cnfJwk, nonce, aud } = {}) {
+async function issueMemberSdJwt(url, env, user, { cnfJwk, nonce, aud, walletCopy } = {}) {
   const isLdasMember = user.status === 'approved';
-  const { credential, did, statusIndex, privateKey } = await memberCredential(url, env, user, { cnfJwk, nonce, aud });
+  const { credential, did, statusIndex, privateKey } = await memberCredential(url, env, user, { cnfJwk, nonce, aud, walletCopy });
   // IETF SD-JWT VC: claims sit at the top level (no credentialSubject, no @context),
   // the subject goes in `sub`, revocation in `status` (IETF Token Status List).
   // The W3C-shaped `credential` above is kept only for the vc+jwt format.
@@ -734,6 +743,9 @@ async function issueMemberSdJwt(url, env, user, { cnfJwk, nonce, aud } = {}) {
     saltGenerator: sdSaltGenerator,
   });
   const sdKeys = [
+    // A wallet copy hides the account id and the per-person timestamps by default (see src/oid4vci.js).
+    // The holder can still show them to a service that needs them.
+    ...(walletCopy ? ['sub', 'ldas_verification'] : []),
     'name',
     ...(user.orcid ? ['orcid'] : []),
     ...(isLdasMember ? ['memberOf'] : []),
