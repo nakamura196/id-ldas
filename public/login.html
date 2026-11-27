@@ -91,11 +91,11 @@ $('sendCodeBtn').onclick = async () => {
   $('sendCodeBtn').disabled = true;
   msg('確認コードを送信中...');
   try {
-    const res = await post('/api/auth/email/start', { email });
+    const res = await post('/api/auth/email/start', { email, next: nextPath, name: $('nameInput').value.trim() || undefined });
     emailChallengeId = res.challengeId;
     $('emailStep1').hidden = true;
     $('emailStep2').hidden = false;
-    msg(res.devCode ? `ローカル開発用コード: ${res.devCode}` : '確認コードを送信しました（有効期限 10 分）。メールをご確認ください。');
+    msg(res.devCode ? `ローカル開発用コード: ${res.devCode}（リンク: ${res.devLink}）` : '確認コードを送信しました（有効期限 10 分）。届いたコードを入力するか、メールのリンクをこのブラウザで開いてください。');
   } catch (err) {
     msg(err.message, true);
   } finally {

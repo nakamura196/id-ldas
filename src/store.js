@@ -83,7 +83,10 @@ const SCHEMA = `
     code_hash       TEXT NOT NULL,
     attempts        INTEGER NOT NULL DEFAULT 0,
     expires_at      INTEGER NOT NULL,
-    created_at      INTEGER NOT NULL
+    created_at      INTEGER NOT NULL,
+    browser_hash    TEXT,
+    next_path       TEXT,
+    display_name    TEXT
   );
 `;
 
@@ -103,6 +106,13 @@ const MIGRATIONS = [
   "ALTER TABLE users ADD COLUMN grdm_id TEXT",
 ];
 
+// Added 2026-11-26 for the sign-in link in the email (same browser only, see emailLoginLink).
+const CHALLENGE_MIGRATIONS = [
+  "ALTER TABLE email_login_challenges ADD COLUMN browser_hash TEXT",
+  "ALTER TABLE email_login_challenges ADD COLUMN next_path TEXT",
+  "ALTER TABLE email_login_challenges ADD COLUMN display_name TEXT",
+];
+
 export class Store extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
@@ -110,6 +120,8 @@ export class Store extends DurableObject {
     ctx.storage.sql.exec(OID4VCI_SCHEMA); // wallet issuance (src/oid4vci.js)
     const have = new Set(ctx.storage.sql.exec('PRAGMA table_info(users)').toArray().map((c) => c.name));
     for (const m of MIGRATIONS) if (!have.has(m.split(' ')[5])) ctx.storage.sql.exec(m);
+    const haveCh = new Set(ctx.storage.sql.exec('PRAGMA table_info(email_login_challenges)').toArray().map((c) => c.name));
+    for (const m of CHALLENGE_MIGRATIONS) if (!haveCh.has(m.split(' ')[5])) ctx.storage.sql.exec(m);
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_orcid ON users(orcid)');
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_wallet ON users(wallet)');
     ctx.storage.sql.exec('CREATE UNIQUE INDEX IF NOT EXISTS users_status_index ON users(status_index)');
