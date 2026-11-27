@@ -7,6 +7,17 @@
 //      gets a nonce, and sends a proof JWT signed with its own key.
 //   3. We issue the SD-JWT with every disclosure and bind it to that key (cnf.jwk).
 //      The wallet then chooses what to disclose each time it presents.
+//   4. Batch issuance (OID4VCI 1.0 `batch_credential_issuance`): the wallet may send up to BATCH_SIZE
+//      proofs, each with its own key, and gets that many copies. Each copy is meant to be shown once,
+//      so two services comparing notes cannot tell they saw the same person (RFC 9901, privacy
+//      considerations: verifier/verifier unlinkability). To keep the copies apart, each one has
+//        - its own holder key (cnf.jwk), salts and signature,
+//        - its own status list position, drawn at random from the upper half of the list,
+//        - `sub` and `ldas_verification` (which carries per-person timestamps) as selectively
+//          disclosable claims instead of always-visible ones,
+//        - `iat` rounded down to the start of the UTC day.
+//      The page path (/authorize, the "Issue" button) is unchanged: ds.ldas.jp and pay.ldas.jp key
+//      accounts on `sub`, and they get it there as before.
 //
 // Secrets (pre-authorized code, access token, nonce, tx_code) are stored only as SHA-256 hashes.
 // Wallet endpoints are called server-to-server without cookies, so they carry no session and no CORS
@@ -26,10 +37,16 @@ const TOKEN_TTL = 5 * MINUTE;
 const NONCE_TTL = 5 * MINUTE;
 const TX_CODE_LENGTH = 6;
 const TX_MAX_ATTEMPTS = 5;            // wrong tx_code this many times and the offer is dead
-const OFFERS_PER_USER_PER_DAY = 5;    // each offer can become at most one credential
+const OFFERS_PER_USER_PER_DAY = 5;    // each offer can become at most one batch of copies
 const OFFERS_PER_DAY = 500;
 const NONCES_PER_HOUR = 3000;         // the nonce endpoint is anonymous; this bounds the table
 const PROOF_MAX_AGE_S = 300;
+export const BATCH_SIZE = 10;
+// Status list positions for wallet copies: random, in the upper half of the 131,072-bit list.
+// Positions below WALLET_INDEX_BASE stay sequential, one per person, for the page path.
+export const WALLET_INDEX_BASE = 65536;
+const WALLET_INDEX_END = 131072;
+const WALLET_INDEX_HEADROOM = 2000;   // refuse new copies when fewer free positions are left
 const PROOF_ALGS = { ES256: { kty: 'EC', crv: 'P-256' }, EdDSA: { kty: 'OKP', crv: 'Ed25519' } };
 
 // Tables, created by the Store Durable Object (src/store.js) at start-up.
@@ -49,6 +66,14 @@ export const OID4VCI_SCHEMA = `
     user_id    TEXT NOT NULL REFERENCES users(id),
     expires_at INTEGER NOT NULL,
     used_at    INTEGER                     -- one credential per token
+  );
+  -- One row per wallet copy: which status list position it uses. Rows are dropped a day after the
+  -- copy expires, which frees the position (an expired copy is invalid whatever its bit says).
+  CREATE TABLE IF NOT EXISTS oid4vci_copies (
+    idx        INTEGER PRIMARY KEY,        -- position in /status/token/1 (and /status/1)
+    user_id    TEXT NOT NULL REFERENCES users(id),
+    expires_at INTEGER NOT NULL,           -- ms; the copy's exp
+    revoked_at INTEGER                     -- set by self-revocation
   );
   CREATE TABLE IF NOT EXISTS oid4vci_nonces (
     nonce_hash TEXT PRIMARY KEY,           -- SHA-256 of c_nonce; deleted when used
@@ -141,6 +166,7 @@ function issuerMetadata(url) {
     credential_endpoint: `${o}/oid4vci/credential`,
     nonce_endpoint: `${o}/oid4vci/nonce`,
     display: [{ name: 'LDAS ID', locale: 'en' }, { name: 'LDAS ID', locale: 'ja' }],
+    batch_credential_issuance: { batch_size: BATCH_SIZE },
     credential_configurations_supported: {
       [CONFIG_ID]: {
         format: 'dc+sd-jwt',
@@ -279,19 +305,28 @@ async function credential(request, url, env, d) {
   let proofs = [];
   if (body.proofs && Array.isArray(body.proofs.jwt)) proofs = body.proofs.jwt;
   else if (body.proof && body.proof.proof_type === 'jwt' && typeof body.proof.jwt === 'string') proofs = [body.proof.jwt];
-  if (proofs.length !== 1 || typeof proofs[0] !== 'string') {
-    return oauthError(400, 'invalid_proof', 'exactly one jwt proof is required (batch issuance is not supported)');
+  if (proofs.length < 1 || proofs.length > BATCH_SIZE || proofs.some((p) => typeof p !== 'string')) {
+    return oauthError(400, 'invalid_proof', `send between 1 and ${BATCH_SIZE} jwt proofs`);
   }
 
-  let holder;
+  const holders = [];
   try {
-    holder = await verifyProof(proofs[0], url.origin);
+    for (const p of proofs) holders.push(await verifyProof(p, url.origin));
   } catch (e) {
     return oauthError(400, 'invalid_proof', e.message);
   }
+  // One request, one c_nonce: every proof must carry the same one. Each copy needs its own key,
+  // otherwise the copies could be linked by the key alone.
+  if (holders.some((h) => h.nonce !== holders[0].nonce)) {
+    return oauthError(400, 'invalid_proof', 'all proofs in one request must use the same nonce');
+  }
+  const keyIds = new Set(holders.map((h) => `${h.jwk.kty}:${h.jwk.crv}:${h.jwk.x}:${h.jwk.y || ''}`));
+  if (keyIds.size !== holders.length) {
+    return oauthError(400, 'invalid_proof', 'each proof in a batch must use a different key');
+  }
   // The nonce is used up here, whatever happens next.
   const used = await db.prepare('DELETE FROM oid4vci_nonces WHERE nonce_hash = ? AND expires_at > ? RETURNING nonce_hash')
-    .bind(await sha256(holder.nonce), now).first();
+    .bind(await sha256(holders[0].nonce), now).first();
   if (!used) return oauthError(400, 'invalid_nonce', 'the nonce is unknown, expired or already used; get a new one from the nonce endpoint');
   // The token is used up only now, so a wallet whose first proof had a stale nonce can retry.
   const took = await db.prepare('UPDATE oid4vci_tokens SET used_at = ? WHERE token_hash = ? AND used_at IS NULL AND expires_at > ? RETURNING user_id')
@@ -302,8 +337,42 @@ async function credential(request, url, env, d) {
   const user = await db.prepare('SELECT * FROM users WHERE id = ?').bind(took.user_id).first();
   if (!user || !eligible(user)) return oauthError(403, 'credential_request_denied', 'this account cannot receive a credential');
 
-  const { issued } = await d.issueMemberSdJwt(url, env, user, { cnfJwk: holder.jwk });
-  return json({ credentials: [{ credential: issued }] }, 200, { 'Cache-Control': 'no-store' });
+  const indices = await takeCopyIndices(db, user.id, holders.length, now);
+  const credentials = [];
+  for (let i = 0; i < holders.length; i++) {
+    const { issued, sdClaims } = await d.issueMemberSdJwt(url, env, user, {
+      cnfJwk: holders[i].jwk,
+      walletCopy: { statusIndex: indices[i] },
+    });
+    await db.prepare('UPDATE oid4vci_copies SET expires_at = ? WHERE idx = ?').bind(sdClaims.exp * 1000, indices[i]).run();
+    credentials.push({ credential: issued });
+  }
+  return json({ credentials }, 200, { 'Cache-Control': 'no-store' });
+}
+
+// Reserve `n` free status list positions at random in [WALLET_INDEX_BASE, WALLET_INDEX_END).
+// Random, not consecutive: consecutive positions would tell services the copies came together.
+async function takeCopyIndices(db, userId, n, now) {
+  await db.prepare('DELETE FROM oid4vci_copies WHERE expires_at < ?').bind(now - DAY_MS).run();
+  const inUse = Number((await db.prepare('SELECT COUNT(*) AS c FROM oid4vci_copies').first()).c);
+  if (inUse + n > WALLET_INDEX_END - WALLET_INDEX_BASE - WALLET_INDEX_HEADROOM) {
+    throw Object.assign(new Error('no free status list positions for wallet copies; try again later'), { status: 503, oauthError: 'temporarily_unavailable' });
+  }
+  const span = WALLET_INDEX_END - WALLET_INDEX_BASE;
+  const out = [];
+  // Placeholder expiry (the real one is written right after signing); a crash in between leaves a
+  // row that is cleaned up a day later, which is harmless.
+  const placeholder = now + 60 * DAY_MS;
+  for (let tries = 0; out.length < n && tries < n * 50; tries++) {
+    const r = new Uint32Array(1);
+    crypto.getRandomValues(r);
+    const idx = WALLET_INDEX_BASE + (r[0] % span);
+    const row = await db.prepare('INSERT OR IGNORE INTO oid4vci_copies (idx, user_id, expires_at) VALUES (?, ?, ?) RETURNING idx')
+      .bind(idx, userId, placeholder).first();
+    if (row) out.push(idx);
+  }
+  if (out.length < n) throw Object.assign(new Error('could not reserve status list positions'), { status: 503, oauthError: 'temporarily_unavailable' });
+  return out;
 }
 
 // Proof of possession (OID4VCI 1.0, appendix F.1): a JWT signed by the key the credential will be
