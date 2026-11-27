@@ -107,6 +107,7 @@ async function api(request, url, env) {
     case 'POST /api/email/verify':         return emailVerify(request, env);
     case 'POST /api/auth/email/start':     return emailLoginStart(request, url, env);
     case 'POST /api/auth/email/verify':    return emailLoginVerify(request, env);
+    case 'POST /api/auth/email/link':      return emailLoginLink(request, env);
     case 'GET /api/admin/users':           return adminUsers(request, env);
     case 'POST /api/admin/decide':     return adminDecide(request, env);
   }
@@ -949,7 +950,7 @@ async function emailChallenge(request, url, env) {
         from,
         to: [normalizedEmail],
         subject: `[LDAS ID] 所属ドメイン確認コード: ${code}`,
-        text: `LDAS ID の所属ドメイン確認コードは ${code} です（有効期限 10 分）。\n\n確認されるドメイン: ${emailDomain}\n所属表記: ${affiliation}\n\n※メールアドレス本体はサーバおよび証明書（VC）には保存されません。`,
+        text: `LDAS ID の所属ドメイン確認コードは ${code} です（有効期限 10 分）。\n\n確認されるドメイン: ${emailDomain}\n所属表記: ${affiliation}\n\nコードを入力する代わりに、次のリンクを開いて「確認する」を押すこともできます（LDAS ID にログインしているブラウザで開いてください）。\n${emailLink(url, 'a', id, code)}\n\n※メールアドレス本体はサーバおよび証明書（VC）には保存されません。\n※このメールに心当たりがない場合は、何もせず破棄してください。`,
       }),
     });
     if (!sendRes.ok) {
@@ -1074,13 +1075,22 @@ async function emailLoginStart(request, url, env) {
   const code = String(rand[0] % 1000000).padStart(6, '0');
   const id = crypto.randomUUID();
   const codeHash = await sha256Hex(`${id}:${code}`);
+  // The link in the email signs in only the browser that asked for it (this cookie). Otherwise
+  // someone could type a victim's address, and the victim clicking the link would sign in the
+  // stranger's browser. Elsewhere the link page just shows the code to type on the first screen.
+  const browserNonce = `${crypto.randomUUID()}${crypto.randomUUID()}`.replaceAll('-', '');
+  const browserHash = await sha256Hex(browserNonce);
+  const nextPath = safeNextPath(typeof body?.next === 'string' ? body.next : '/');
+  const displayName = typeof body?.name === 'string' ? body.name.trim().slice(0, 80) : '';
 
   await db(env).batch([
     db(env).prepare('DELETE FROM email_login_challenges WHERE email_hash = ? OR expires_at < ?').bind(emailHash, now),
     db(env)
-      .prepare('INSERT INTO email_login_challenges (id, email_hash, domain, affiliation, is_free_webmail, code_hash, attempts, expires_at, created_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)')
-      .bind(id, emailHash, emailDomain, affiliation, isFreeWebmail, codeHash, now + EMAIL_CODE_TTL, now),
+      .prepare('INSERT INTO email_login_challenges (id, email_hash, domain, affiliation, is_free_webmail, code_hash, attempts, expires_at, created_at, browser_hash, next_path, display_name) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?, ?)')
+      .bind(id, emailHash, emailDomain, affiliation, isFreeWebmail, codeHash, now + EMAIL_CODE_TTL, now, browserHash, nextPath, displayName || null),
   ]);
+  const linkCookie = { 'Set-Cookie': cookie(EML_COOKIE, browserNonce, EMAIL_CODE_TTL) };
+  const link = emailLink(url, 'c', id, code);
 
   const isLocal = isLocalHost(url);
   if (env.RESEND_API_KEY) {
@@ -1095,7 +1105,7 @@ async function emailLoginStart(request, url, env) {
         from,
         to: [normalizedEmail],
         subject: `[LDAS ID] ログイン確認コード: ${code}`,
-        text: `LDAS ID のログイン確認コードは ${code} です（有効期限 10 分・最大 5 回まで入力可能）。\n\n※メールアドレス本体はデータベースおよび証明書（VC）には一切保存されません（不可逆な HMAC ハッシュ値のみで本人を識別します）。`,
+        text: `LDAS ID のログイン確認コードは ${code} です（有効期限 10 分・最大 5 回まで入力可能）。\n\nコードを入力する代わりに、次のリンクを開いて「ログインする」を押すこともできます（ログインを始めたのと同じブラウザで開いてください）。\n${link}\n\n※メールアドレス本体はデータベースおよび証明書（VC）には一切保存されません（不可逆な HMAC ハッシュ値のみで本人を識別します）。\n※このメールに心当たりがない場合は、何もせず破棄してください。`,
       }),
     });
     if (!sendRes.ok) {
@@ -1106,15 +1116,15 @@ async function emailLoginStart(request, url, env) {
       type: 'email-login-challenge',
       id,
       attributes: { challengeId: id, emailDomain: isFreeWebmail ? null : emailDomain, delivery: 'resend' },
-    });
+    }, { headers: linkCookie });
   }
 
   if (isLocal) {
     return jsonApi({
       type: 'email-login-challenge',
       id,
-      attributes: { challengeId: id, emailDomain: isFreeWebmail ? null : emailDomain, delivery: 'local-dev', devCode: code },
-    });
+      attributes: { challengeId: id, emailDomain: isFreeWebmail ? null : emailDomain, delivery: 'local-dev', devCode: code, devLink: link },
+    }, { headers: linkCookie });
   }
   return jsonApiError('メール送信機能（RESEND_API_KEY）がまだ設定されていません', 503);
 }
@@ -1128,7 +1138,6 @@ async function emailLoginVerify(request, env) {
     return jsonApiError('6 桁の確認コードを入力してください', 400);
   }
 
-  const now = Date.now();
   const row = await takeAttempt(env, 'email_login_challenges', challengeId);
   if (!row) {
     const gone = await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ? RETURNING id').bind(challengeId).first();
@@ -1142,8 +1151,43 @@ async function emailLoginVerify(request, env) {
     return jsonApiError('確認コードが一致しません', 400);
   }
 
+  return finishEmailLogin(env, row, displayName || String(row.display_name || ''));
+}
+
+// Sign in from the link in the email. Works only in the browser that asked for the code
+// (the __Host-eml cookie set by emailLoginStart); from anywhere else it answers 409 and the
+// link page shows the code instead. The check comes before an attempt is used up.
+async function emailLoginLink(request, env) {
+  const body = await request.json().catch(() => ({}));
+  const challengeId = typeof body?.challengeId === 'string' ? body.challengeId.trim() : '';
+  const code = typeof body?.code === 'string' ? body.code.trim() : '';
+  if (!challengeId || !/^\d{6}$/.test(code)) return jsonApiError('リンクが正しくありません。メールのリンクをそのまま開いてください', 400);
+
+  const pending = await db(env)
+    .prepare('SELECT browser_hash FROM email_login_challenges WHERE id = ? AND expires_at > ? AND attempts < ?')
+    .bind(challengeId, Date.now(), EMAIL_MAX_ATTEMPTS)
+    .first();
+  if (!pending) return jsonApiError('リンクの有効期限（10分）が切れたか、既に使われました。ログイン画面からもう一度送信してください', 400);
+  const nonce = cookies(request)[EML_COOKIE] || '';
+  if (!pending.browser_hash || !nonce || !constantTimeEqual(await sha256Hex(nonce), String(pending.browser_hash))) {
+    return jsonApiError('other-browser', 409);
+  }
+
+  const row = await takeAttempt(env, 'email_login_challenges', challengeId);
+  if (!row) return jsonApiError('リンクの有効期限（10分）が切れたか、既に使われました。ログイン画面からもう一度送信してください', 400);
+  if (!constantTimeEqual(await sha256Hex(`${challengeId}:${code}`), String(row.code_hash))) {
+    return jsonApiError('リンクが正しくありません。メールのリンクをそのまま開いてください', 400);
+  }
+  const res = await finishEmailLogin(env, row, String(row.display_name || ''));
+  if (res.ok) res.headers.append('Set-Cookie', cookie(EML_COOKIE, '', 0));
+  return res;
+}
+
+// Use up the challenge row (once) and sign the person in, creating the account on first sign-in.
+async function finishEmailLogin(env, row, displayName) {
+  const now = Date.now();
   // The code is used once: only the request that actually deletes the row signs in.
-  const used = await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ? RETURNING id').bind(challengeId).first();
+  const used = await db(env).prepare('DELETE FROM email_login_challenges WHERE id = ? RETURNING id').bind(row.id).first();
   if (!used) return jsonApiError('この確認コードは既に使われました', 400);
 
   const emailDomain = Number(row.is_free_webmail) ? null : String(row.domain);
@@ -1187,9 +1231,16 @@ async function emailLoginVerify(request, env) {
   }
 
   return jsonApi(
-    { type: 'session', id: user.id, attributes: { ok: true, userId: user.id, status: user.status } },
+    { type: 'session', id: user.id, attributes: { ok: true, userId: user.id, status: user.status, next: safeNextPath(row.next_path || '/') } },
     { headers: { 'Set-Cookie': await newSession(env, user.id) } },
   );
+}
+
+// Link put in the emails. The challenge id and code go in the #fragment: browsers never send it
+// to the server, so it stays out of logs, and a mail scanner that opens the link only gets the
+// static page (nothing happens until the person presses the button).
+function emailLink(url, kind, id, code) {
+  return `${url.origin}/email-link#${kind}=${encodeURIComponent(id)}&k=${code}`;
 }
 
 async function grdmStart(request, url, env) {
@@ -1428,6 +1479,7 @@ function jsonApiError(title, status = 400, headers = {}) {
 // and silently sign a visitor into the attacker's account (or fix the OAuth `state` cookie).
 const SID_COOKIE = '__Host-sid';
 const CH_COOKIE = '__Host-ch';
+const EML_COOKIE = '__Host-eml'; // which browser asked for an email sign-in code (see emailLoginLink)
 
 function cookie(name, value, ttlMs) {
   return `${name}=${value}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${Math.floor(ttlMs / 1000)}`;

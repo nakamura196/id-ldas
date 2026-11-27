@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>Email link — LDAS ID</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<main class="auth-page">
+  <div class="card">
+    <div class="card-header">
+      <h1 id="title">LDAS ID</h1>
+      <p class="lead" id="lead"></p>
+    </div>
+
+    <section id="actionBox" class="stack" hidden>
+      <button id="goBtn" type="button" class="full"></button>
+    </section>
+
+    <!-- Shown when the link is opened in another browser or device: type the code on the first screen. -->
+    <section id="codeBox" class="note stack-sm" hidden>
+      <p id="codeText" style="margin:0;"></p>
+      <p class="code-input" id="codeValue" style="font-size:2em; letter-spacing:0.2em; margin:0;"></p>
+    </section>
+
+    <p id="msg" role="status"></p>
+    <p><a href="/login" id="backLink">ログイン画面へ</a></p>
+  </div>
+</main>
+
+<script type="module">
+// The link carries the challenge id and code in the #fragment (never sent to the server).
+// Nothing happens on load, so a mail scanner opening the link cannot use it up.
+import '/ui.js';
+
+const $ = (id) => document.getElementById(id);
+const msg = (text, bad) => { $('msg').textContent = text; $('msg').className = bad ? 'bad' : ''; };
+
+const params = new URLSearchParams(location.hash.slice(1));
+history.replaceState(null, '', location.pathname); // keep the code out of history and bookmarks
+const loginId = params.get('c');
+const affilId = params.get('a');
+const code = params.get('k') || '';
+
+function showCode(text) {
+  $('actionBox').hidden = true;
+  $('lead').textContent = '';
+  $('codeBox').hidden = false;
+  $('codeText').textContent = text;
+  $('codeValue').textContent = code;
+}
+
+async function post(path, body) {
+  const r = await fetch(path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  const doc = await r.json().catch(() => ({}));
+  return { status: r.status, ok: r.ok, data: doc.data?.attributes, error: doc.errors?.[0]?.title };
+}
+
+if (!/^\d{6}$/.test(code) || !(loginId || affilId)) {
+  $('lead').textContent = 'リンクが正しくありません。メールのリンクをそのまま開くか、届いた 6 桁のコードを入力してください。';
+} else if (loginId) {
+  $('title').textContent = 'LDAS ID にログイン';
+  $('lead').textContent = '下のボタンを押すとログインします。';
+  $('goBtn').textContent = 'ログインする';
+  $('actionBox').hidden = false;
+  $('goBtn').onclick = async () => {
+    $('goBtn').disabled = true;
+    msg('確認中...');
+    const res = await post('/api/auth/email/link', { challengeId: loginId, code });
+    if (res.ok) { location.replace(res.data?.next || '/'); return; }
+    if (res.status === 409) {
+      msg('');
+      return showCode('このリンクは、ログインを始めたのと別のブラウザ（または端末）で開かれました。安全のため、ここではログインしません。ログインを始めた画面に、次の確認コードを入力してください。');
+    }
+    $('goBtn').disabled = false;
+    msg(res.error || 'ログインできませんでした', true);
+  };
+} else {
+  $('title').textContent = '所属ドメインの確認';
+  $('lead').textContent = '下のボタンを押すと、所属ドメインの確認を完了します。';
+  $('goBtn').textContent = '確認する';
+  $('backLink').href = '/';
+  $('backLink').textContent = 'LDAS ID のトップへ';
+  $('actionBox').hidden = false;
+  $('goBtn').onclick = async () => {
+    $('goBtn').disabled = true;
+    msg('確認中...');
+    const res = await post('/api/email/verify', { challengeId: affilId, code });
+    if (res.ok) {
+      $('actionBox').hidden = true;
+      msg(`所属を確認しました: ${res.data?.affiliation ?? ''}（${res.data?.emailDomain ?? ''}）`);
+      return;
+    }
+    if (res.status === 401) {
+      msg('');
+      return showCode('このブラウザでは LDAS ID にログインしていません。確認を始めた画面に、次の確認コードを入力してください。');
+    }
+    $('goBtn').disabled = false;
+    msg(res.error || '確認できませんでした', true);
+  };
+}
+</script>
+</body>
+</html>
